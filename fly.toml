@@ -1,0 +1,5 @@
+
+app = "gexdash-demo"
+
+[build]
+  dockerfile = "Dockerfile"
