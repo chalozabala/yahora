@@ -143,6 +143,11 @@ class DemoFeed:
                 px = self._price(self.best_ask_i - 1 - k)
                 lvl = self.bid_sz[k]
             sz = lvl if k < levels - 1 else max(1, int(lvl * random.uniform(0.3, 0.9)))
+            if k == levels - 1:      # last level only partially consumed
+                if side == "B":
+                    self.ask_sz[k] = max(1, self.ask_sz[k] - sz)
+                else:
+                    self.bid_sz[k] = max(1, self.bid_sz[k] - sz)
             # fills of one order share the same matching-engine timestamp
             yield {"type": "trade", "ts": ts, "px": px, "sz": sz, "side": side}
         # the book actually moves through the consumed levels
@@ -181,7 +186,10 @@ def _record_events(rec, symbol_map: dict) -> list:
     if isinstance(rec, dbn.TradeMsg):
         px = _px(rec.price)
         if px is not None:
-            side = rec.side if rec.side in ("B", "A") else "N"
+            # rec.side is a databento_dbn.Side enum: normalize to a plain
+            # str at the boundary or json.dumps chokes downstream
+            side = str(rec.side)
+            side = side if side in ("B", "A") else "N"
             events.append({"type": "trade", "ts": rec.ts_event, "px": px,
                            "sz": rec.size, "side": side})
     elif isinstance(rec, dbn.MBP10Msg):
@@ -227,13 +235,23 @@ class LiveFeed:
             except Exception:
                 pass
 
-    async def events(self) -> AsyncIterator[dict]:
+    def _connect(self):
+        """Create the client and subscribe. Runs in a worker thread: the
+        first subscribe() blocks on TCP connect + CRAM auth (up to tens of
+        seconds) and must not stall the server's event loop."""
         db = _import_databento()
         client = db.Live(key=self.api_key, reconnect_policy="reconnect")
-        self._client = client
         for schema in ("trades", "mbp-10"):
             client.subscribe(dataset=self.dataset, schema=schema,
                              stype_in=self.stype_in, symbols=[self.symbol])
+        return client
+
+    async def events(self) -> AsyncIterator[dict]:
+        yield {"type": "status", "state": "loading", "mode": "live",
+               "symbol": self.symbol,
+               "detail": f"connecting to databento {self.dataset}…"}
+        client = await asyncio.to_thread(self._connect)
+        self._client = client
         yield {"type": "status", "state": "running", "mode": "live",
                "symbol": self.symbol,
                "detail": f"databento live {self.dataset}"}
@@ -244,6 +262,10 @@ class LiveFeed:
                     yield ev
         finally:
             self.stop()
+        # reaching here means the gateway closed the session cleanly —
+        # tell the UI instead of leaving it "running" over a frozen chart
+        yield {"type": "error",
+               "message": "live feed disconnected by the gateway"}
 
 
 class ReplayFeed:
@@ -268,25 +290,41 @@ class ReplayFeed:
     def _fetch(self):
         db = _import_databento()
         client = db.Historical(key=self.api_key)
-        stores = []
+        per_schema = {}
         for schema in ("trades", "mbp-10"):
-            stores.append(client.timeseries.get_range(
+            store = client.timeseries.get_range(
                 dataset=self.dataset, schema=schema,
                 symbols=[self.symbol], stype_in=self.stype_in,
-                start=self.start, end=self.end, limit=self.limit))
-        recs = [r for s in stores for r in s]
+                start=self.start, end=self.end, limit=self.limit)
+            per_schema[schema] = [r for r in store
+                                  if hasattr(r, "ts_event")]
+        # a schema that hit the record limit stops mid-range; trim the
+        # others to the same instant so the replay stays synchronized
+        truncated = [s for s, recs in per_schema.items()
+                     if len(recs) >= self.limit]
+        cutoff = None
+        if truncated:
+            cutoff = min(per_schema[s][-1].ts_event for s in truncated)
+            per_schema = {s: [r for r in recs if r.ts_event <= cutoff]
+                          for s, recs in per_schema.items()}
+        recs = [r for recs in per_schema.values() for r in recs]
         recs.sort(key=lambda r: r.ts_event)
-        return recs
+        return recs, truncated, cutoff
 
     async def events(self) -> AsyncIterator[dict]:
         yield {"type": "status", "state": "loading", "mode": "replay",
                "symbol": self.symbol,
                "detail": f"downloading {self.start} → {self.end}"}
-        recs = await asyncio.to_thread(self._fetch)
+        recs, truncated, cutoff = await asyncio.to_thread(self._fetch)
         if not recs:
             yield {"type": "error", "message": "No records in range "
                    f"{self.start} → {self.end} for {self.symbol}"}
             return
+        if truncated:
+            yield {"type": "status", "state": "info",
+                   "detail": f"record limit hit for {', '.join(truncated)}; "
+                             f"replay trimmed to {cutoff} ns — "
+                             "request a shorter range for full coverage"}
         yield {"type": "status", "state": "running", "mode": "replay",
                "symbol": self.symbol,
                "detail": f"replaying {len(recs)} records at {self.speed}x"}

@@ -98,14 +98,14 @@ class SweepDetector:
                  min_size: int = 40, auto_size: bool = False,
                  sd_interval_ns: int = 5 * 60 * 1_000_000_000,
                  sd_multiplier: float = 6.0):
-        self.window_ns = window_ns
-        self.min_levels = min_levels
-        self.min_size = min_size
-        self.auto_size = auto_size
-        self.sd_interval_ns = sd_interval_ns
-        self.sd_multiplier = sd_multiplier
         self._chains: Dict[str, _Chain] = {}          # side -> open chain
         self._sizes: Deque[Tuple[int, int]] = deque() # (ts, size) history
+        # route through update_params so construction and live updates
+        # apply identical clamping
+        self.update_params(window_ns=window_ns, min_levels=min_levels,
+                           min_size=min_size, auto_size=auto_size,
+                           sd_interval_ns=sd_interval_ns,
+                           sd_multiplier=sd_multiplier)
 
     def update_params(self, window_ns: Optional[int] = None,
                       min_levels: Optional[int] = None,
@@ -129,17 +129,21 @@ class SweepDetector:
     # ------------------------------------------------------------------
 
     def current_threshold(self, now_ns: int) -> float:
-        """Size threshold in force right now (SD-based when automatic)."""
+        """Size threshold in force at ``now_ns`` (SD-based when automatic).
+
+        Only samples with ts <= now_ns count, so a chain that closed at
+        ts_last is judged by the history that existed then — a later
+        outlier print cannot retroactively raise its threshold.
+        """
         if not self.auto_size:
             return float(self.min_size)
         cutoff = now_ns - self.sd_interval_ns
-        while self._sizes and self._sizes[0][0] < cutoff:
-            self._sizes.popleft()
-        n = len(self._sizes)
+        samples = [s for ts, s in self._sizes if cutoff <= ts <= now_ns]
+        n = len(samples)
         if n < MIN_SD_SAMPLES:
             return float(self.min_size)
-        mean = sum(s for _, s in self._sizes) / n
-        var = sum((s - mean) ** 2 for _, s in self._sizes) / n
+        mean = sum(samples) / n
+        var = sum((s - mean) ** 2 for s in samples) / n
         return math.sqrt(var) * self.sd_multiplier
 
     def on_trade(self, trade: Trade) -> List[Sweep]:
@@ -147,12 +151,17 @@ class SweepDetector:
         if trade.side not in ("B", "A"):
             return []                      # no aggressor: not part of a chain
         out: List[Sweep] = []
-        self._sizes.append((trade.ts, trade.size))
 
+        # close a stale chain BEFORE recording this trade's size, so the
+        # closing print does not contaminate the chain's SD threshold
         chain = self._chains.get(trade.side)
         if chain is not None and trade.ts - chain.ts_last > self.window_ns:
             out.extend(self._close(trade.side))
             chain = None
+
+        self._sizes.append((trade.ts, trade.size))
+        self._trim_sizes(trade.ts)
+
         if chain is None:
             chain = _Chain(side=trade.side, ts_first=trade.ts,
                            ts_last=trade.ts)
@@ -169,7 +178,20 @@ class SweepDetector:
                 out.extend(self._close(side))
         return out
 
+    def finalize(self) -> List[Sweep]:
+        """Force-close all open chains — call when a bounded feed ends."""
+        out: List[Sweep] = []
+        for side in ("B", "A"):
+            out.extend(self._close(side))
+        return out
+
     # ------------------------------------------------------------------
+
+    def _trim_sizes(self, now_ns: int) -> None:
+        """Bound the size-history deque in every mode, not just automatic."""
+        cutoff = now_ns - self.sd_interval_ns
+        while self._sizes and self._sizes[0][0] < cutoff:
+            self._sizes.popleft()
 
     def _close(self, side: str) -> List[Sweep]:
         chain = self._chains.pop(side, None)

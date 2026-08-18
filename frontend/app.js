@@ -19,6 +19,7 @@ const S = {
   ws: null,
   wantRun: false,          // user pressed Start (drives auto-reconnect)
   cfg: null,               // last start message sent
+  run: 0,                  // feed generation id (stale-event guard)
   speed: 1,                // replay speed, for clock extrapolation
 
   cols: [],                // [{t, bids:[[px,sz]], asks:[[px,sz]], bb, ba}]
@@ -104,7 +105,14 @@ function connect() {
   S.ws = ws;
   ws.onopen = () => {
     setConn("on", "connected");
-    if (S.wantRun && S.cfg) ws.send(JSON.stringify(S.cfg));
+    if (S.wantRun && S.cfg) {
+      // the server session restarts from scratch: reset local state and
+      // bump the generation so leftovers from the old run are dropped
+      S.run++;
+      S.cfg.run = S.run;
+      resetData();
+      ws.send(JSON.stringify(S.cfg));
+    }
   };
   ws.onmessage = (e) => {
     let batch;
@@ -133,7 +141,8 @@ function detectorParams() {
 
 function sendStart() {
   const mode = $("mode").value;
-  const cfg = { type: "start", mode, params: detectorParams() };
+  S.run++;
+  const cfg = { type: "start", mode, run: S.run, params: detectorParams() };
   if (mode !== "demo") {
     cfg.dataset = $("dataset").value.trim();
     cfg.symbol = $("symbol").value.trim();
@@ -189,6 +198,9 @@ function bumpClock(tMs) {
 }
 
 function ingest(ev) {
+  // batches from a previous feed can still be in flight after a restart;
+  // their stale wall-clock timestamps would pin the forward-only clock
+  if (ev.run !== undefined && ev.run !== S.run) return;
   switch (ev.type) {
     case "snapshot": ingestSnapshot(ev); break;
     case "trade": ingestTrade(ev); break;
@@ -306,10 +318,22 @@ function fmtTime(ms) {
     "." + String(Math.floor(ms % 1000)).padStart(3, "0").slice(0, 1);
 }
 
+let _dpForTick = -1, _dp = 2;
+
 function fmtPx(px) {
   if (!isFinite(px)) return "–";
-  const dp = S.tick ? Math.max(0, Math.min(9, -Math.floor(Math.log10(S.tick) - 1e-9))) : 2;
-  return px.toFixed(Math.min(dp, 9));
+  if (S.tick !== _dpForTick) {
+    // decimals that make the tick exact: 0.25 → 2, 0.01 → 2, 1 → 0
+    _dpForTick = S.tick;
+    _dp = 2;
+    if (S.tick > 0) {
+      let dp = 0;
+      let t = S.tick;
+      while (dp < 9 && Math.abs(t - Math.round(t)) > 1e-9) { t *= 10; dp++; }
+      _dp = dp;
+    }
+  }
+  return px.toFixed(_dp);
 }
 
 function updateStats() {

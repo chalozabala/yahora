@@ -77,14 +77,27 @@ class Session:
         self.feed_task: Optional[asyncio.Task] = None
         self.buffer: List[dict] = []
         self.lock = asyncio.Lock()
+        self.run = None                # client-chosen feed generation id
         self.sender_task = asyncio.create_task(self._sender())
 
     # -- control ----------------------------------------------------------
 
     async def handle(self, msg: dict) -> None:
+        try:
+            await self._handle(msg)
+        except Exception as exc:   # malformed input must not kill the socket
+            await self.push({"type": "error",
+                             "message": f"bad request: {exc!r}"})
+
+    async def _handle(self, msg: dict) -> None:
         mtype = msg.get("type")
         if mtype == "start":
             await self.stop_feed()
+            # a new run: stale batches from the old feed must not reach
+            # the client with the new generation id
+            async with self.lock:
+                self.buffer.clear()
+            self.run = msg.get("run")
             params = msg.get("params") or {}
             self.detector = SweepDetector(**_detector_kwargs(params))
             try:
@@ -145,13 +158,22 @@ class Session:
                         for sweep in self.detector.flush(ts):
                             await self.push(sweep.to_dict())
                     await self.push(ev)
+            await self._finalize_chains()   # bounded feed ended (replay)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # surface feed crashes to the UI
+            await self._finalize_chains()
             await self.push({"type": "error",
                              "message": f"feed error: {exc!r}"})
 
+    async def _finalize_chains(self) -> None:
+        """Emit sweeps whose chains were still open when the feed ended."""
+        for sweep in self.detector.finalize():
+            await self.push(sweep.to_dict())
+
     async def push(self, ev: dict) -> None:
+        if self.run is not None:
+            ev = {**ev, "run": self.run}
         async with self.lock:
             self.buffer.append(ev)
 
@@ -164,7 +186,21 @@ class Session:
                 continue
             batch = self._compact(batch)
             try:
-                await self.ws.send_text(json.dumps(batch))
+                text = json.dumps(batch)
+            except (TypeError, ValueError):
+                # never let one unserializable event kill the stream
+                safe = []
+                for ev in batch:
+                    try:
+                        json.dumps(ev)
+                        safe.append(ev)
+                    except (TypeError, ValueError):
+                        pass
+                if not safe:
+                    continue
+                text = json.dumps(safe)
+            try:
+                await self.ws.send_text(text)
             except Exception:
                 return  # socket gone; receive loop will clean up
 

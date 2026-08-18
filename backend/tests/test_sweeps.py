@@ -150,6 +150,48 @@ def test_update_params_applies_to_open_chain():
     assert len(d.flush(ts + 500 * MS)) == 1
 
 
+def test_sizes_history_bounded_even_with_auto_off():
+    d = det(min_levels=2, auto_size=False,
+            sd_interval_ns=60_000_000_000)          # 60s window
+    ts = 1_000 * MS
+    for i in range(5_000):
+        d.on_trade(Trade(ts + i * 100 * MS, 100.0, 1, "B"))
+    # 60s window / 100ms cadence -> ~600 entries, not 5000
+    assert len(d._sizes) <= 610
+
+
+def test_min_levels_clamped_on_construction():
+    d = det(min_levels=1)                           # floor is 2
+    ts = 1_000 * MS
+    feed(d, [(ts, 100.0, 500, "B")])
+    assert d.flush(ts + 500 * MS) == []             # 1 level never a sweep
+
+
+def test_closing_outlier_does_not_raise_chain_threshold():
+    d = det(min_levels=2, min_size=0, auto_size=True,
+            sd_interval_ns=600_000_000_000, sd_multiplier=3.0)
+    ts = 1_000 * MS
+    for i in range(10):                             # quiet tape, sd = 0
+        d.on_trade(Trade(ts + i * 300 * MS, 100.0, 2, "B"))
+    d.flush(ts + 5_000 * MS)
+    base = ts + 6_000 * MS
+    feed(d, [(base, 100.00, 3, "B"), (base, 100.25, 3, "B")])
+    # a 500-lot outlier arrives later and closes the chain: it must not
+    # retroactively inflate the threshold the chain is judged against
+    out = feed(d, [(base + 400 * MS, 100.50, 500, "B")])
+    assert len(out) == 1
+    assert out[0].total_size == 6
+
+
+def test_finalize_closes_open_chains():
+    d = det(min_levels=2)
+    ts = 1_000 * MS
+    feed(d, [(ts, 100.00, 10, "B"), (ts, 100.25, 10, "B")])
+    sweeps = d.finalize()                           # e.g. end of replay
+    assert len(sweeps) == 1 and sweeps[0].total_size == 20
+    assert d.finalize() == []                       # idempotent
+
+
 def test_to_dict_wire_format():
     d = det(min_levels=2)
     ts = 1_000 * MS
