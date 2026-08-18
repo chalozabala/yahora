@@ -1,14 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sweeps — web indicator</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="toolbar">
+  <div class="brand">SWEEPS<span class="sub">web indicator</span></div>
 
-<!doctype html><html><head><meta charset=utf-8>
-<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
-<script src="https://cdn.tailwindcss.com"></script>
-</head><body class="bg-gray-900 text-white p-4">
-<h1 class="text-2xl font-bold mb-4">GEX Dashboard (demo)</h1>
-<div id="out"></div>
-<script>
-async function update(){
- const r=await fetch('/gexlive'); const d=await r.json();
- document.getElementById('out').innerHTML=JSON.stringify(d);
-}
-setInterval(update,5000);update();
-</script></body></html>
+  <label>Mode
+    <select id="mode">
+      <option value="demo" selected>Demo (synthetic)</option>
+      <option value="live">Databento · Live</option>
+      <option value="replay">Databento · Replay</option>
+    </select>
+  </label>
+
+  <span class="dbfields" hidden>
+    <label>Dataset <input id="dataset" value="GLBX.MDP3" size="9"></label>
+    <label>Symbol <input id="symbol" value="ES.v.0" size="7"></label>
+    <label>Symbology
+      <select id="stype">
+        <option value="continuous" selected>continuous</option>
+        <option value="raw_symbol">raw_symbol</option>
+        <option value="parent">parent</option>
+      </select>
+    </label>
+  </span>
+
+  <span class="replayfields" hidden>
+    <label>Start <input id="rstart" value="" size="16"
+                        placeholder="2025-06-02T13:30Z"></label>
+    <label>End <input id="rend" value="" size="16"
+                      placeholder="2025-06-02T13:40Z"></label>
+    <label>Speed <input id="rspeed" type="number" value="1" min="0.1"
+                        max="1000" step="0.5"></label>
+  </span>
+
+  <button id="connect" class="primary">Start</button>
+  <button id="stopbtn" disabled>Stop</button>
+
+  <span class="spacer"></span>
+
+  <label><input id="showheat" type="checkbox" checked> heatmap</label>
+  <label><input id="showtrades" type="checkbox" checked> all trades</label>
+  <button id="gear" title="Sweeps settings">⚙ Settings</button>
+</header>
+
+<main>
+  <div id="chartwrap">
+    <canvas id="chart"></canvas>
+    <div id="tooltip" hidden></div>
+
+    <div id="settings" hidden>
+      <h2>Sweeps configuration <button id="closeset" title="close">×</button></h2>
+
+      <section>
+        <h4>Detection</h4>
+        <div class="row"><label for="windowms">Time, ms</label>
+          <input id="windowms" type="number" value="200" min="0" max="5000" step="10"></div>
+        <div class="row"><label for="minlevels">Price levels</label>
+          <input id="minlevels" type="number" value="3" min="2" max="20"></div>
+        <div class="row"><label for="minsize">Minimum size</label>
+          <input id="minsize" type="number" value="40" min="0" step="10"></div>
+        <div class="row"><label for="autosize">Automatic</label>
+          <input id="autosize" type="checkbox"></div>
+        <div class="row"><label for="sdinterval">SD interval, min</label>
+          <input id="sdinterval" type="number" value="5" min="1" max="120"></div>
+        <div class="row"><label for="sdmult">SD multiplier</label>
+          <input id="sdmult" type="range" value="6" min="1" max="15" step="0.5">
+          <output id="sdmultval">6</output></div>
+      </section>
+
+      <section>
+        <h4>Display</h4>
+        <div class="row"><label for="showicons">Show icons</label>
+          <input id="showicons" type="checkbox" checked></div>
+        <div class="row"><label for="showvolume">Show volume</label>
+          <input id="showvolume" type="checkbox" checked></div>
+        <div class="row"><label for="showdots">Show trade dots</label>
+          <input id="showdots" type="checkbox" checked></div>
+        <div class="row"><label for="iconsize">Icons size</label>
+          <input id="iconsize" type="range" value="18" min="10" max="40" step="1">
+          <output id="iconsizeval">18</output></div>
+        <div class="row"><label for="iconoffset">Icons offset</label>
+          <input id="iconoffset" type="range" value="70" min="20" max="220" step="5">
+          <output id="iconoffsetval">70</output></div>
+        <div class="row"><label for="linewidth">Offset line width</label>
+          <input id="linewidth" type="range" value="1" min="1" max="4" step="1">
+          <output id="linewidthval">1</output></div>
+        <div class="row"><label for="dotsize">Dots size</label>
+          <input id="dotsize" type="range" value="5" min="2" max="12" step="1">
+          <output id="dotsizeval">5</output></div>
+        <div class="row"><label for="dotshape">Dots shape</label>
+          <select id="dotshape">
+            <option value="round" selected>round</option>
+            <option value="rect">rectangular</option>
+          </select></div>
+        <div class="row"><label for="buycolor">Aggressive buyers</label>
+          <input id="buycolor" type="color" value="#00e676"></div>
+        <div class="row"><label for="sellcolor">Aggressive sellers</label>
+          <input id="sellcolor" type="color" value="#ff3d57"></div>
+      </section>
+
+      <section>
+        <h4>Alerts</h4>
+        <div class="row"><label for="soundalert">Sound alert</label>
+          <input id="soundalert" type="checkbox"></div>
+        <div class="row"><label>&nbsp;</label>
+          <button id="testalert">Test alert</button></div>
+      </section>
+
+      <p class="hint">Tip: drag any sweep icon vertically to move all icons.
+        Right-click the chart to open this dialog.</p>
+    </div>
+  </div>
+
+  <aside id="sidebar">
+    <div id="stats">
+      <div class="stat buy"><span id="nbuy">0</span><small>buy sweeps</small>
+        <span id="vbuy" class="vol">0</span></div>
+      <div class="stat sell"><span id="nsell">0</span><small>sell sweeps</small>
+        <span id="vsell" class="vol">0</span></div>
+    </div>
+    <h3>Sweep log</h3>
+    <div id="sweeplog"></div>
+  </aside>
+</main>
+
+<footer id="statusbar">
+  <span id="conn" class="dot off"></span>
+  <span id="statustext">disconnected</span>
+  <span class="spacer"></span>
+  <span id="feedinfo"></span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

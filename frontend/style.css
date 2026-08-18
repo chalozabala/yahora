@@ -1,0 +1,178 @@
+:root {
+  --bg: #0b0e17;
+  --panel: #10141f;
+  --panel2: #151a28;
+  --border: #232a3d;
+  --text: #cfd6e6;
+  --muted: #7683a0;
+  --buy: #00e676;
+  --sell: #ff3d57;
+  --accent: #3aa0ff;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; height: 100%;
+  background: var(--bg); color: var(--text);
+  font: 13px/1.4 "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  overflow: hidden;
+}
+
+body { display: flex; flex-direction: column; }
+
+/* ---- toolbar -------------------------------------------------------- */
+
+#toolbar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 6px 12px;
+  background: var(--panel); border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  font-weight: 800; letter-spacing: 2px; font-size: 15px; color: #fff;
+}
+.brand .sub {
+  margin-left: 6px; font-weight: 400; letter-spacing: 0;
+  font-size: 11px; color: var(--muted);
+}
+
+#toolbar label { color: var(--muted); white-space: nowrap; }
+
+#toolbar input, #toolbar select {
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 3px 6px; font: inherit;
+}
+#toolbar input[type=number] { width: 62px; }
+
+#toolbar fieldset {
+  display: flex; gap: 8px; align-items: center;
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 2px 8px 4px; margin: 0;
+}
+#toolbar legend { color: var(--muted); font-size: 10px; padding: 0 4px; }
+
+button {
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 4px 14px; font: inherit; cursor: pointer;
+}
+button.primary { background: var(--accent); border-color: var(--accent); color: #04121f; font-weight: 600; }
+button:disabled { opacity: .45; cursor: default; }
+
+.spacer { flex: 1; }
+
+/* ---- main layout ---------------------------------------------------- */
+
+main { flex: 1; display: flex; min-height: 0; }
+
+#chartwrap { position: relative; flex: 1; min-width: 0; }
+#chart { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+#tooltip {
+  position: absolute; z-index: 5; pointer-events: none;
+  background: rgba(13, 18, 30, .95); border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 10px; font-size: 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.5); max-width: 260px;
+}
+#tooltip .t-side-B { color: var(--buy); font-weight: 700; }
+#tooltip .t-side-A { color: var(--sell); font-weight: 700; }
+
+/* ---- settings dialog ------------------------------------------------- */
+
+#settings {
+  position: absolute; top: 12px; right: 80px; z-index: 10;
+  width: 292px; max-height: calc(100% - 24px); overflow-y: auto;
+  background: rgba(16, 20, 31, .97); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 14px 12px;
+  box-shadow: 0 8px 30px rgba(0,0,0,.6);
+}
+#settings h2 {
+  display: flex; justify-content: space-between; align-items: center;
+  margin: 0 0 6px; font-size: 13px; color: #fff;
+}
+#settings h2 button {
+  padding: 0 8px; font-size: 15px; line-height: 20px;
+}
+#settings h4 {
+  margin: 10px 0 4px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 1px; color: var(--muted);
+  border-bottom: 1px solid var(--border); padding-bottom: 3px;
+}
+#settings .row {
+  display: flex; align-items: center; gap: 8px; margin: 5px 0;
+}
+#settings .row label { flex: 0 0 128px; color: var(--text); }
+#settings .row input[type=number] { width: 74px; }
+#settings .row input[type=range] { flex: 1; min-width: 0; }
+#settings .row output { width: 28px; text-align: right; color: var(--muted); }
+#settings .row input[type=color] {
+  width: 40px; height: 22px; padding: 0; border: 1px solid var(--border);
+  background: none; cursor: pointer;
+}
+#settings input, #settings select, #settings button {
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 3px 6px; font: inherit;
+}
+#settings .hint { color: var(--muted); font-size: 11px; margin: 10px 0 0; }
+#settings input:disabled { opacity: .4; }
+
+/* ---- sidebar -------------------------------------------------------- */
+
+#sidebar {
+  width: 252px; flex: none; display: flex; flex-direction: column;
+  background: var(--panel); border-left: 1px solid var(--border);
+}
+
+#stats { display: flex; gap: 8px; padding: 10px; }
+.stat {
+  flex: 1; text-align: center; border-radius: 6px; padding: 6px 4px;
+  background: var(--panel2); border: 1px solid var(--border);
+}
+.stat span { font-size: 18px; font-weight: 700; display: block; }
+.stat small { color: var(--muted); display: block; }
+.stat .vol { font-size: 12px; color: var(--muted); font-weight: 400; }
+.stat.buy span:first-child { color: var(--buy); }
+.stat.sell span:first-child { color: var(--sell); }
+
+#sidebar h3 {
+  margin: 2px 10px 6px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 1px; color: var(--muted);
+}
+
+#sweeplog { flex: 1; overflow-y: auto; padding: 0 6px 8px; }
+
+.swrow {
+  display: grid;
+  grid-template-columns: 16px 52px 1fr 58px;
+  gap: 6px; align-items: baseline;
+  padding: 4px 6px; margin-bottom: 2px;
+  background: var(--panel2); border: 1px solid transparent;
+  border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+.swrow:hover { border-color: var(--border); }
+.swrow.B .arrow { color: var(--buy); }
+.swrow.A .arrow { color: var(--sell); }
+.swrow .sz { font-weight: 700; text-align: right; }
+.swrow.B .sz { color: var(--buy); }
+.swrow.A .sz { color: var(--sell); }
+.swrow .rng { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swrow .tm { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ---- status bar ----------------------------------------------------- */
+
+#statusbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 12px; font-size: 12px; color: var(--muted);
+  background: var(--panel); border-top: 1px solid var(--border);
+}
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot.off { background: #555; }
+.dot.on { background: var(--buy); box-shadow: 0 0 6px var(--buy); }
+.dot.err { background: var(--sell); box-shadow: 0 0 6px var(--sell); }
+
+@media (max-width: 900px) {
+  #sidebar { display: none; }
+}
