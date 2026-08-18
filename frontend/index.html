@@ -10,6 +10,11 @@
 <header id="toolbar">
   <div class="brand">SWEEPS<span class="sub">web indicator</span></div>
 
+  <nav id="viewtabs">
+    <button id="tab-chart" class="tab active">Chart</button>
+    <button id="tab-backtest" class="tab">Backtest</button>
+  </nav>
+
   <label>Mode
     <select id="mode">
       <option value="demo" selected>Demo (synthetic)</option>
@@ -118,6 +123,67 @@
     </div>
   </div>
 
+  <div id="btview" hidden>
+    <div class="bt-card" id="btform">
+      <h2>Backtest de sweeps</h2>
+      <p class="bt-sub">Corre el detector sobre datos históricos y mide qué
+        hizo el precio después de cada sweep. Elegí el instrumento, tocá el
+        botón y esperá el reporte — nada más.</p>
+
+      <div class="bt-row">
+        <label>Datos
+          <select id="btmode">
+            <option value="databento">Databento (reales)</option>
+            <option value="demo">Demo (sintéticos, sin clave)</option>
+          </select>
+        </label>
+        <label>Instrumento
+          <select id="btsymbol">
+            <option value="ES.v.0" selected>S&amp;P 500 (ES)</option>
+            <option value="NQ.v.0">Nasdaq (NQ)</option>
+            <option value="custom">otro…</option>
+          </select>
+        </label>
+        <input id="btsymbolcustom" size="8" placeholder="GC.v.0" hidden>
+        <label>Días <input id="btdays" type="number" value="10" min="1"
+                           max="31"></label>
+      </div>
+
+      <details id="btadv">
+        <summary>Ajustes avanzados</summary>
+        <div class="bt-row">
+          <label>Dataset <input id="btdataset" value="GLBX.MDP3" size="9"></label>
+          <label>Symbology
+            <select id="btstype">
+              <option value="continuous" selected>continuous</option>
+              <option value="raw_symbol">raw_symbol</option>
+              <option value="parent">parent</option>
+            </select>
+          </label>
+          <span class="bt-note">El filtro de sweeps (tamaño, niveles,
+            tiempo) se toma del panel ⚙ Settings de la pestaña Chart.</span>
+        </div>
+      </details>
+
+      <div class="bt-actions">
+        <button id="btrun" class="primary bt-big">▶&nbsp; Correr backtest</button>
+      </div>
+      <div id="btconfirm" class="bt-confirm" hidden></div>
+      <div id="bterror" class="bt-error" hidden></div>
+    </div>
+
+    <div class="bt-card" id="btprogress" hidden>
+      <div class="bt-prog-head">
+        <span id="btprogtext">Preparando…</span>
+        <button id="btcancel">Cancelar</button>
+      </div>
+      <div class="bt-bar"><div id="btbarfill"></div></div>
+      <div id="btprogdetail" class="bt-note"></div>
+    </div>
+
+    <div id="btreport" hidden></div>
+  </div>
+
   <aside id="sidebar">
     <div id="stats">
       <div class="stat buy"><span id="nbuy">0</span><small>buy sweeps</small>
@@ -138,5 +204,6 @@
 </footer>
 
 <script src="app.js"></script>
+<script src="backtest.js"></script>
 </body>
 </html>

@@ -3,3 +3,5 @@ __pycache__/
 .pytest_cache/
 node_modules/
 .env
+data_cache/
+backtest_results/

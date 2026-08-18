@@ -26,14 +26,18 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import time
+import uuid
 from pathlib import Path
 from typing import List, Optional
 
 import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
+import backtest as bt
 from feeds import make_feed
 from sweeps import SweepDetector, Trade
 
@@ -247,6 +251,119 @@ async def ws_endpoint(ws: WebSocket) -> None:
         pass
     finally:
         await session.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Backtest jobs
+# ---------------------------------------------------------------------------
+
+_jobs: dict = {}          # job_id -> job state dict
+
+
+def _report_path(job_id: str) -> Path:
+    return bt.RESULTS_DIR / f"{job_id}.json"
+
+
+def _public_report(report: dict) -> dict:
+    """The UI payload: everything except the bulky per-sweep rows."""
+    return {k: v for k, v in report.items() if k != "sweeps"}
+
+
+async def _run_backtest_job(job_id: str, cfg: dict) -> None:
+    job = _jobs[job_id]
+
+    def on_progress(p: dict) -> None:
+        job["progress"] = p
+
+    try:
+        report = await asyncio.to_thread(
+            bt.run_backtest, cfg, on_progress, job["cancel"].is_set)
+        bt.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        _report_path(job_id).write_text(json.dumps(report))
+        job["report"] = _public_report(report)
+        job["state"] = "done"
+    except bt.Cancelled:
+        job["state"] = "cancelled"
+    except Exception as exc:
+        job["state"] = "error"
+        job["error"] = f"{type(exc).__name__}: {exc}"
+
+
+@app.post("/backtest/estimate")
+async def backtest_estimate(cfg: dict) -> dict:
+    try:
+        return await asyncio.to_thread(bt.estimate_cost, cfg)
+    except RuntimeError as exc:
+        return {"error": str(exc)}
+
+
+@app.post("/backtest")
+async def backtest_start(cfg: dict) -> dict:
+    job_id = uuid.uuid4().hex[:12]
+    _jobs[job_id] = {
+        "id": job_id, "state": "running",
+        "progress": {"pct": 0.0, "detail": "starting"},
+        "error": None, "report": None,
+        "cancel": threading.Event(),
+        "created_at": time.time(),
+        "config": {k: cfg.get(k) for k in
+                   ("mode", "dataset", "symbol", "days")},
+    }
+    asyncio.create_task(_run_backtest_job(job_id, cfg))
+    return {"job_id": job_id}
+
+
+@app.get("/backtest/{job_id}")
+async def backtest_status(job_id: str) -> dict:
+    job = _jobs.get(job_id)
+    if job is None:
+        path = _report_path(job_id)
+        if path.exists():   # finished in an earlier server life
+            report = json.loads(path.read_text())
+            return {"id": job_id, "state": "done", "progress": {"pct": 100},
+                    "report": _public_report(report)}
+        return {"id": job_id, "state": "unknown"}
+    return {k: job[k] for k in
+            ("id", "state", "progress", "error", "report", "config")}
+
+
+@app.delete("/backtest/{job_id}")
+async def backtest_cancel(job_id: str) -> dict:
+    job = _jobs.get(job_id)
+    if job is not None:
+        job["cancel"].set()
+    return {"ok": True}
+
+
+@app.get("/backtest/{job_id}/csv")
+async def backtest_csv(job_id: str) -> PlainTextResponse:
+    path = _report_path(job_id)
+    if not path.exists():
+        return PlainTextResponse("not found", status_code=404)
+    report = json.loads(path.read_text())
+    return PlainTextResponse(
+        bt.report_to_csv(report), media_type="text/csv",
+        headers={"Content-Disposition":
+                 f'attachment; filename="sweeps_backtest_{job_id}.csv"'})
+
+
+@app.get("/backtests")
+async def backtest_list() -> dict:
+    items = []
+    if bt.RESULTS_DIR.exists():
+        for p in sorted(bt.RESULTS_DIR.glob("*.json"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)[:20]:
+            try:
+                r = json.loads(p.read_text())
+                items.append({"id": p.stem,
+                              "generated_at": r.get("generated_at"),
+                              "config": r.get("config"),
+                              "totals": r.get("totals")})
+            except Exception:
+                continue
+    running = [{"id": j["id"], "state": j["state"], "config": j["config"]}
+               for j in _jobs.values() if j["state"] == "running"]
+    return {"running": running, "finished": items}
 
 
 @app.get("/health")

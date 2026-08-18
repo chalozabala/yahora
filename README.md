@@ -49,7 +49,36 @@ dataset/symbol/symbology can be entered in the toolbar.
 > `trades` and `mbp-10` for the range you request (capped by a record
 > limit). Check `metadata.get_cost` in the Databento portal if unsure.
 
+## Backtest (pestaña "Backtest")
+
+Pensado para que lo corra cualquiera, sin saber nada técnico:
+
+1. Abrí la app y tocá la pestaña **Backtest**.
+2. Elegí el instrumento (S&P 500 / Nasdaq) y la cantidad de días
+   (10 por defecto). Con **Demo** podés probarlo sin clave de Databento.
+3. Tocá **▶ Correr backtest**. Con datos reales, antes de gastar te
+   muestra el costo estimado de los datos y cuántos días ya están en
+   caché (los días descargados no se vuelven a pagar).
+4. Mirá el progreso día por día y, al final, el reporte: cuántos sweeps
+   hubo, qué hizo el precio 10s/1m/5m/15m después de cada uno (en ticks,
+   a favor o en contra de la dirección del sweep), el gráfico por día y
+   los sweeps más grandes. Todo se puede bajar como CSV para Excel.
+
+El filtro de detección (tamaño mínimo, niveles, tiempo) es el mismo del
+panel ⚙ Settings, así el backtest mide exactamente lo que ves en vivo.
+Los resultados quedan guardados en `backtest_results/` y los datos crudos
+en `data_cache/`. También hay CLI: `python backend/backtest_cli.py --help`.
+
 ## Run locally
+
+La forma corta (instala dependencias y levanta todo):
+
+```bash
+./run.sh
+# abrir http://localhost:8080
+```
+
+Manual:
 
 ```bash
 pip install -r backend/requirements.txt
