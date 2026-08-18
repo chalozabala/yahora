@@ -15,6 +15,9 @@ function showView(which) {
   $("btview").hidden = chart;
   $("tab-chart").classList.toggle("active", chart);
   $("tab-backtest").classList.toggle("active", !chart);
+  // the settings dialog lives inside the (hidden) chart view
+  $("gear").style.display = chart ? "" : "none";
+  if (!chart) $("settings").hidden = true;
 }
 $("tab-chart").addEventListener("click", () => showView("chart"));
 $("tab-backtest").addEventListener("click", () => showView("backtest"));
@@ -56,7 +59,11 @@ async function btPost(url, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  if (!r.ok) {
+    let detail = "";
+    try { detail = (await r.json()).detail || ""; } catch { /* no body */ }
+    throw new Error(detail || `HTTP ${r.status}`);
+  }
   return r.json();
 }
 
@@ -65,8 +72,10 @@ $("btrun").addEventListener("click", async () => {
   $("btconfirm").hidden = true;
   const cfg = btConfig();
   $("btrun").disabled = true;
+  let launched = false;      // once launched, btPoll/btLaunch own the button
   try {
     if (cfg.mode === "demo") {
+      launched = true;
       await btLaunch(cfg);
       return;
     }
@@ -87,17 +96,20 @@ $("btrun").addEventListener("click", async () => {
   } catch (e) {
     btShowError(`No se pudo iniciar: ${e.message}`);
   } finally {
-    if ($("btconfirm").hidden) $("btrun").disabled = false;
+    if (!launched && $("btconfirm").hidden) $("btrun").disabled = false;
   }
 });
 
 async function btLaunch(cfg) {
+  if (btPollTimer) { clearInterval(btPollTimer); btPollTimer = null; }
+  $("btrun").disabled = true;
   try {
     $("btreport").hidden = true;
     $("btprogress").hidden = false;
     $("btprogtext").textContent = "Iniciando…";
     $("btbarfill").style.width = "0%";
     $("btprogdetail").textContent = "";
+    $("btcancel").disabled = false;
     const { job_id } = await btPost("/backtest", cfg);
     btJobId = job_id;
     btPollTimer = setInterval(btPoll, 700);
@@ -109,7 +121,10 @@ async function btLaunch(cfg) {
 }
 
 $("btcancel").addEventListener("click", async () => {
-  if (btJobId) await fetch(`/backtest/${btJobId}`, { method: "DELETE" });
+  if (!btJobId) return;
+  $("btcancel").disabled = true;
+  $("btprogtext").textContent = "Cancelando…";
+  await fetch(`/backtest/${btJobId}`, { method: "DELETE" });
 });
 
 async function btPoll() {
@@ -131,8 +146,10 @@ async function btPoll() {
   btPollTimer = null;
   $("btprogress").hidden = true;
   $("btrun").disabled = false;
+  const finishedJob = btJobId;
+  btJobId = null;
   if (st.state === "done" && st.report) {
-    renderReport(st.report, btJobId);
+    renderReport(st.report, finishedJob);
   } else if (st.state === "cancelled") {
     btShowError("Backtest cancelado.");
   } else {
@@ -231,12 +248,15 @@ function renderReport(rep, jobId) {
         <th>mediana</th><th>promedio</th><th>% a favor</th>
         <th>${sideMark("B")} mediana</th><th>${sideMark("B")} % a favor</th>
         <th>${sideMark("A")} mediana</th><th>${sideMark("A")} % a favor</th></tr>`;
+  const withN = (rate, n) =>
+    rate === null || rate === undefined ? "–"
+      : `${pct(rate)} <small>(${num(n)})</small>`;
   for (const h of rep.horizons) {
     html += `<tr><td>${esc(h.label)} después</td>
       <td>${num(h.all.n)}</td><td>${fx(h.all.median)}</td>
       <td>${fx(h.all.mean)}</td><td>${pct(h.all.hit_rate)}</td>
-      <td>${fx(h.buy.median)}</td><td>${pct(h.buy.hit_rate)}</td>
-      <td>${fx(h.sell.median)}</td><td>${pct(h.sell.hit_rate)}</td></tr>`;
+      <td>${fx(h.buy.median)}</td><td>${withN(h.buy.hit_rate, h.buy.n)}</td>
+      <td>${fx(h.sell.median)}</td><td>${withN(h.sell.hit_rate, h.sell.n)}</td></tr>`;
   }
   html += `</table></div></div>`;
 
@@ -264,16 +284,27 @@ function renderReport(rep, jobId) {
       <a href="/backtest/${esc(jobId)}/csv" download>
         <button>⬇ Descargar todos los sweeps (CSV)</button></a>
       <span class="bt-note">Una fila por sweep, con el movimiento posterior
-        a cada horizonte. Se abre en Excel.</span>
+        a cada horizonte. Se abre en Excel o Google Sheets.</span>
     </div>
     ${(rep.notes || []).map((n) => `<p class="bt-note">⚠ ${esc(n)}</p>`).join("")}
   </div>`;
 
   el.innerHTML = html;
   el.hidden = false;
+  btLastReport = rep;
   drawDailyChart(rep);
+  // innerHTML replaced the canvas: re-observe the new one so window
+  // resizes redraw instead of CSS-stretching a stale bitmap
+  if (btResizeObs) btResizeObs.disconnect();
+  btResizeObs = new ResizeObserver(() => {
+    if (btLastReport) drawDailyChart(btLastReport);
+  });
+  btResizeObs.observe($("btdaily"));
   el.scrollIntoView({ behavior: "smooth", block: "start" });
 }
+
+let btLastReport = null;
+let btResizeObs = null;
 
 // ---------------------------------------------------------------------------
 // Daily grouped bar chart (canvas, hover tooltip)

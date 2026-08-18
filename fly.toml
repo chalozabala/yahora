@@ -3,6 +3,17 @@ app = "sweeps-web-indicator"
 [build]
   dockerfile = "Dockerfile"
 
+[env]
+  SWEEPS_CACHE_DIR = "/data/data_cache"
+  SWEEPS_RESULTS_DIR = "/data/backtest_results"
+
+# Persistent volume: without it, the Databento data cache and saved
+# backtest reports are wiped on every machine stop/restart.
+# Create it once before deploying:  fly volumes create sweeps_data
+[mounts]
+  source = "sweeps_data"
+  destination = "/data"
+
 [http_service]
   internal_port = 8080
   force_https = true

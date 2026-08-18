@@ -137,6 +137,7 @@ main { flex: 1; display: flex; min-height: 0; }
   flex: 1; overflow-y: auto; padding: 18px;
   display: flex; flex-direction: column; gap: 14px; align-items: center;
 }
+#btview[hidden] { display: none; }   /* author display beats [hidden] */
 .bt-card {
   width: min(880px, 100%);
   background: var(--panel); border: 1px solid var(--border);

@@ -67,7 +67,7 @@ Pensado para que lo corra cualquiera, sin saber nada técnico:
 El filtro de detección (tamaño mínimo, niveles, tiempo) es el mismo del
 panel ⚙ Settings, así el backtest mide exactamente lo que ves en vivo.
 Los resultados quedan guardados en `backtest_results/` y los datos crudos
-en `data_cache/`. También hay CLI: `python backend/backtest_cli.py --help`.
+en `data_cache/`. También hay CLI: `python3 backend/backtest_cli.py --help`.
 
 ## Run locally
 
@@ -81,9 +81,9 @@ La forma corta (instala dependencias y levanta todo):
 Manual:
 
 ```bash
-pip install -r backend/requirements.txt
+python3 -m pip install -r backend/requirements.txt
 export DATABENTO_API_KEY=db-...        # optional; demo mode works without
-cd backend && uvicorn main:app --port 8080
+cd backend && python3 -m uvicorn main:app --port 8080
 # open http://localhost:8080
 ```
 
@@ -93,15 +93,20 @@ runs with FastAPI alone.
 ## Deploy (Fly.io)
 
 ```bash
-fly launch            # uses the Dockerfile
+fly volumes create sweeps_data   # persists the data cache + saved reports
+fly launch                       # uses the Dockerfile + fly.toml
 fly secrets set DATABENTO_API_KEY=db-...
 ```
+
+El volumen es importante: sin él, la caché de datos de Databento y los
+reportes guardados se borran cada vez que la máquina se apaga por
+inactividad — y volverías a pagar por los mismos datos.
 
 ## Tests
 
 ```bash
-pip install pytest
-pytest backend/tests -q
+python3 -m pip install pytest
+python3 -m pytest backend/tests -q
 ```
 
 ## Endpoints

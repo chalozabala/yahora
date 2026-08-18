@@ -5,12 +5,22 @@ trades and measures what price does after each sweep (forward move at
 several horizons, in the direction of the sweep).
 
 Design goals:
-  * one streaming pass per day — never holds a day of trades in memory;
+  * one streaming pass — never holds a day of trades in memory;
   * downloaded Databento data is cached on disk per (dataset, symbol, day)
     so a re-run costs nothing;
   * a deterministic synthetic source ("demo") exercises the whole pipeline
     without credentials;
   * progress + cancellation callbacks so a web UI can show a live bar.
+
+Correctness notes (the subtle parts):
+  * Forward outcomes resolve with the first trade at/after each deadline,
+    BUT a resolution that lands too far past the deadline (session close,
+    weekend, maintenance halt) is discarded — otherwise the next session's
+    open would be recorded as a "1m move".
+  * Data files are split at 00:00 UTC, which is mid-session for CME, so
+    chains are NOT force-closed at day boundaries; the detector's own gap
+    rule closes them when the next print arrives. finalize() runs once,
+    at the very end. Sweeps are dated by their own timestamp.
 
 Only the `trades` schema is needed (detection and outcomes both work on
 prints), which keeps 10-day pulls small and cheap compared to book data.
@@ -25,6 +35,8 @@ import math
 import os
 import random
 import statistics
+import threading
+import uuid
 from pathlib import Path
 from typing import Callable, Iterator, List, Optional, Tuple
 
@@ -45,6 +57,7 @@ CACHE_DIR = Path(os.getenv("SWEEPS_CACHE_DIR", REPO_ROOT / "data_cache"))
 RESULTS_DIR = Path(os.getenv("SWEEPS_RESULTS_DIR", REPO_ROOT / "backtest_results"))
 
 MAX_SWEEP_ROWS = 20_000        # cap on per-sweep rows kept in the report
+TOP_SWEEPS = 20
 
 
 class Cancelled(Exception):
@@ -57,12 +70,18 @@ class Cancelled(Exception):
 
 class OutcomeTracker:
     """Resolves, for each sweep, the first trade price at/after each
-    horizon deadline. O(log n) per event via a deadline heap."""
+    horizon deadline — unless that trade is too far past the deadline
+    (max(2× horizon, 30 s)), which means the deadline fell into a session
+    gap; those outcomes are discarded, not polluted by the next open."""
 
     def __init__(self, horizons: List[Tuple[str, int]]):
         self.horizons = horizons
         self._heap: list = []
         self._seq = itertools.count()
+        self.expired = 0               # deadlines that fell into a gap
+
+    def _max_stale_ns(self, horizon_ns: int) -> int:
+        return max(2 * horizon_ns, 30 * 10 ** 9)
 
     def add(self, row: dict) -> None:
         row["fwd_px"] = [None] * len(self.horizons)
@@ -72,8 +91,11 @@ class OutcomeTracker:
 
     def on_trade(self, ts: int, px: float) -> None:
         while self._heap and self._heap[0][0] <= ts:
-            _, _, i, row = heapq.heappop(self._heap)
-            row["fwd_px"][i] = px
+            deadline, _, i, row = heapq.heappop(self._heap)
+            if ts - deadline <= self._max_stale_ns(self.horizons[i][1]):
+                row["fwd_px"][i] = px
+            else:
+                self.expired += 1
 
     @property
     def unresolved(self) -> int:
@@ -109,6 +131,7 @@ class SyntheticSource:
                 side = "B" if rng.random() < 0.5 else "A"
                 levels = rng.choices([2, 3, 4, 5, 6],
                                      weights=[35, 30, 18, 11, 6])[0]
+                levels = min(levels, self.trades_per_day - n)
                 for k in range(levels):
                     px_i += 1 if side == "B" else -1
                     sz = rng.randint(25, 220)
@@ -123,6 +146,17 @@ class SyntheticSource:
                 n += 1
 
 
+# one lock per cache file: concurrent jobs must not download the same
+# day twice (double billing) or clobber each other's temp files
+_dl_guard = threading.Lock()
+_dl_locks: dict = {}
+
+
+def _path_lock(path: Path) -> threading.Lock:
+    with _dl_guard:
+        return _dl_locks.setdefault(str(path), threading.Lock())
+
+
 class DatabentoSource:
     """Day-by-day trades from Databento historical, cached on disk."""
 
@@ -134,8 +168,8 @@ class DatabentoSource:
         self.api_key = api_key or os.getenv("DATABENTO_API_KEY", "")
         if not self.api_key:
             raise RuntimeError(
-                "No Databento API key configured (DATABENTO_API_KEY). "
-                "Use demo mode to try the backtest without one.")
+                "Falta la clave de Databento (variable DATABENTO_API_KEY). "
+                "Usá el modo Demo para probar el backtest sin clave.")
         self._client = None
 
     def _db(self):
@@ -146,6 +180,14 @@ class DatabentoSource:
         if self._client is None:
             self._client = self._db().Historical(key=self.api_key)
         return self._client
+
+    @staticmethod
+    def _looks_like_no_data(exc: Exception) -> bool:
+        """Only availability-range errors count as 'empty day'. Anything
+        else (bad symbol, wrong dataset, auth) must surface to the user —
+        never be silently converted into a weekend."""
+        msg = str(exc).lower()
+        return any(k in msg for k in ("no data", "data_start", "data_end"))
 
     def cache_path(self, day: dt.date) -> Path:
         safe = "".join(c if c.isalnum() or c in ".-" else "_"
@@ -164,37 +206,48 @@ class DatabentoSource:
                 stype_in=self.stype_in, schema="trades",
                 start=day.isoformat(),
                 end=(day + dt.timedelta(days=1)).isoformat()))
-        except Exception:
-            return None
+        except Exception as exc:
+            if self._looks_like_no_data(exc):
+                return 0.0
+            raise RuntimeError(
+                f"No se pudo estimar el costo de datos: {exc}") from exc
+
+    def _get_range(self, day: dt.date, path: Optional[str] = None):
+        return self.client().timeseries.get_range(
+            dataset=self.dataset, schema="trades",
+            symbols=[self.symbol], stype_in=self.stype_in,
+            start=day.isoformat(),
+            end=(day + dt.timedelta(days=1)).isoformat(),
+            path=path)
 
     def _store(self, day: dt.date):
         db = self._db()
         path = self.cache_path(day)
-        if path.exists():
+        # an incomplete day (today / future) must never be cached, or the
+        # partial file would be reused forever as if it were the full day
+        complete = day < dt.datetime.now(dt.timezone.utc).date()
+        with _path_lock(path):
+            if path.exists():
+                return db.DBNStore.from_file(str(path))
+            if not complete:
+                return self._get_range(day)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.parent / f"{path.name}.{uuid.uuid4().hex[:8]}.part"
+            try:
+                self._get_range(day, path=str(tmp))
+                tmp.rename(path)
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                raise
+            # re-open from the final path: the store returned by get_range
+            # is bound to the temp file name we just renamed away
             return db.DBNStore.from_file(str(path))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".part")
-        try:
-            store = self.client().timeseries.get_range(
-                dataset=self.dataset, schema="trades",
-                symbols=[self.symbol], stype_in=self.stype_in,
-                start=day.isoformat(),
-                end=(day + dt.timedelta(days=1)).isoformat(),
-                path=str(tmp))
-        except Exception:
-            tmp.unlink(missing_ok=True)
-            raise
-        tmp.rename(path)
-        return store
 
     def day_trades(self, day: dt.date) -> Iterator[Tuple[int, float, int, str]]:
         try:
             store = self._store(day)
         except Exception as exc:
-            msg = str(exc).lower()
-            # out-of-range / empty days (weekends, holidays) are not errors
-            if any(k in msg for k in ("no data", "not found", "422",
-                                      "data_start", "data_end")):
+            if self._looks_like_no_data(exc):
                 return
             raise
         for rec in store:
@@ -223,9 +276,10 @@ def make_source(cfg: dict):
 def backtest_days(cfg: dict) -> List[dt.date]:
     days = int(cfg.get("days", 10))
     days = max(1, min(31, days))
+    yesterday = dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=1)
     end_s = cfg.get("end_date")
-    end = (dt.date.fromisoformat(end_s) if end_s
-           else dt.date.today() - dt.timedelta(days=1))
+    end = dt.date.fromisoformat(end_s) if end_s else yesterday
+    end = min(end, yesterday)       # today's data is incomplete: never use it
     return [end - dt.timedelta(days=i) for i in range(days - 1, -1, -1)]
 
 
@@ -273,6 +327,11 @@ def _stats(moves: List[float]) -> dict:
     }
 
 
+def _date_of(ts_ns: int) -> str:
+    return dt.datetime.fromtimestamp(ts_ns / 1e9,
+                                     dt.timezone.utc).date().isoformat()
+
+
 def run_backtest(cfg: dict,
                  progress: Optional[Callable[[dict], None]] = None,
                  is_cancelled: Optional[Callable[[], bool]] = None) -> dict:
@@ -291,20 +350,39 @@ def run_backtest(cfg: dict,
     days = backtest_days(cfg)
 
     sweep_rows: List[dict] = []
-    day_summaries: List[dict] = []
+    daily = {d.isoformat(): {"date": d.isoformat(), "trades": 0,
+                             "sweeps_buy": 0, "sweeps_sell": 0,
+                             "volume_buy": 0, "volume_sell": 0}
+             for d in days}
+    totals = {"sweeps": 0, "buy": 0, "sell": 0, "size_sum": 0, "size_max": 0}
+    top_heap: list = []               # min-heap of (size, seq, row), size TOP
+    top_seq = itertools.count()
     tick = float(cfg.get("tick") or 0) or None
     min_diff = math.inf
     last_px: Optional[float] = None
     total_trades = 0
     overflowed = False
 
-    def record_sweep(sw, day: dt.date):
+    def record_sweep(sw):
         nonlocal overflowed
-        row = {"ts": sw.ts_end, "date": day.isoformat(), "side": sw.side,
+        date = _date_of(sw.ts_end)
+        row = {"ts": sw.ts_end, "date": date, "side": sw.side,
                "size": sw.total_size, "levels": sw.levels,
                "vwap": round(sw.vwap, 6), "px_min": sw.price_min,
                "px_max": sw.price_max, "trades": sw.trade_count}
         tracker.add(row)
+        totals["sweeps"] += 1
+        totals["buy" if sw.side == "B" else "sell"] += 1
+        totals["size_sum"] += sw.total_size
+        totals["size_max"] = max(totals["size_max"], sw.total_size)
+        d = daily.get(date)
+        if d is not None:
+            d["sweeps_buy" if sw.side == "B" else "sweeps_sell"] += 1
+            d["volume_buy" if sw.side == "B" else "volume_sell"] += sw.total_size
+        if len(top_heap) < TOP_SWEEPS:
+            heapq.heappush(top_heap, (sw.total_size, next(top_seq), row))
+        elif sw.total_size > top_heap[0][0]:
+            heapq.heapreplace(top_heap, (sw.total_size, next(top_seq), row))
         if len(sweep_rows) < MAX_SWEEP_ROWS:
             sweep_rows.append(row)
         else:
@@ -315,47 +393,48 @@ def run_backtest(cfg: dict,
         report_progress(phase="day", day=day.isoformat(), day_i=di,
                         days=len(days),
                         pct=round(di / len(days) * 100, 1),
-                        detail=f"processing {day.isoformat()}")
-        day_trades = 0
-        day_sweeps = {"B": 0, "A": 0}
-        day_volume = {"B": 0, "A": 0}
+                        detail=f"procesando {day.isoformat()}")
+        day_key = day.isoformat()
+        first = True
         for ts, px, sz, side in source.day_trades(day):
-            day_trades += 1
+            if first:
+                first = False
+                check_cancel()      # react promptly after a long download
+            daily[day_key]["trades"] += 1
             total_trades += 1
             if total_trades % 50_000 == 0:
                 check_cancel()
-                report_progress(phase="day", day=day.isoformat(), day_i=di,
+                report_progress(phase="day", day=day_key, day_i=di,
                                 days=len(days),
                                 pct=round(di / len(days) * 100, 1),
-                                detail=f"{day.isoformat()} · "
+                                detail=f"{day_key} · "
                                        f"{total_trades:,} trades · "
-                                       f"{len(sweep_rows):,} sweeps")
+                                       f"{totals['sweeps']:,} sweeps")
             if last_px is not None:
                 d = abs(px - last_px)
                 if 1e-9 < d < min_diff:
                     min_diff = d
             last_px = px
+            # order matters: close/emit sweeps FIRST so this same trade can
+            # resolve a just-added deadline that is already in the past
+            closed = detector.on_trade(Trade(ts=ts, price=px, size=sz,
+                                             side=side))
+            closed += detector.flush(ts)   # quiet opposite-side chains too
+            for sw in closed:
+                record_sweep(sw)
             tracker.on_trade(ts, px)
-            for sw in detector.on_trade(Trade(ts=ts, price=px, size=sz,
-                                              side=side)):
-                record_sweep(sw, day)
-                day_sweeps[sw.side] += 1
-                day_volume[sw.side] += sw.total_size
-        # a day boundary is a hard gap: close anything still open
-        for sw in detector.finalize():
-            record_sweep(sw, day)
-            day_sweeps[sw.side] += 1
-            day_volume[sw.side] += sw.total_size
-        day_summaries.append({"date": day.isoformat(), "trades": day_trades,
-                              "sweeps_buy": day_sweeps["B"],
-                              "sweeps_sell": day_sweeps["A"],
-                              "volume_buy": day_volume["B"],
-                              "volume_sell": day_volume["A"]})
+        # NOTE: no per-day finalize — 00:00 UTC is mid-session for CME; the
+        # detector's gap rule closes chains when the next print arrives.
+
+    for sw in detector.finalize():     # the feed truly ended
+        record_sweep(sw)
 
     if tick is None:
-        tick = min_diff if math.isfinite(min_diff) else 1.0
+        # prices are int64 * 1e-9, so the true tick is exact at 9 decimals
+        tick = round(min_diff, 9) if math.isfinite(min_diff) else 1.0
 
-    report_progress(phase="aggregate", pct=99.0, detail="computing statistics")
+    report_progress(phase="aggregate", pct=99.0,
+                    detail="calculando estadísticas")
 
     # ---- aggregate ----
     horizon_stats = []
@@ -375,30 +454,44 @@ def run_backtest(cfg: dict,
         horizon_stats.append({"label": label, "buy": per_side["B"],
                               "sell": per_side["A"], "all": _stats(alls)})
 
-    n_buy = sum(1 for r in sweep_rows if r["side"] == "B")
-    n_sell = len(sweep_rows) - n_buy
-    sizes = [r["size"] for r in sweep_rows]
-    top = sorted(sweep_rows, key=lambda r: -r["size"])[:20]
+    top = [r for _, _, r in sorted(top_heap, key=lambda t: -t[0])]
 
-    for row in sweep_rows:   # ticks version of forward moves, for the CSV
+    def add_fwd_ticks(row):
         row["fwd_ticks"] = [
             None if p is None else round((p - row["vwap"]) / tick *
                                          (1 if row["side"] == "B" else -1), 2)
-            for p in row["fwd_px"]]
+            for p in row.get("fwd_px", [None] * len(HORIZONS))]
+
+    for row in sweep_rows:
+        add_fwd_ticks(row)
+    for row in top:                    # top rows can be outside the cap
+        if "fwd_ticks" not in row:
+            add_fwd_ticks(row)
 
     notes = []
     if overflowed:
-        notes.append(f"More than {MAX_SWEEP_ROWS:,} sweeps detected; "
-                     "per-sweep rows were capped (statistics use the "
-                     "captured rows only). Raise the size filter.")
-    if tracker.unresolved:
-        notes.append("Some horizon outcomes near the end of each day had "
-                     "no later trade and were excluded.")
-    days_with_data = sum(1 for d in day_summaries if d["trades"])
+        notes.append(
+            f"Se detectaron más de {MAX_SWEEP_ROWS:,} sweeps: las "
+            "estadísticas de horizontes y el CSV cubren solo los primeros "
+            f"{MAX_SWEEP_ROWS:,}; los totales y el gráfico por día cuentan "
+            "todos. Subí el tamaño mínimo para un análisis completo.")
+    dropped = tracker.expired + tracker.unresolved
+    if dropped:
+        notes.append(
+            f"{dropped:,} mediciones de horizonte se descartaron por caer "
+            "en huecos de sesión (cierres, fines de semana) o al final de "
+            "los datos — así los gaps nocturnos no contaminan los números.")
+    days_with_data = sum(1 for d in daily.values() if d["trades"])
     if days_with_data < len(days):
-        notes.append(f"{len(days) - days_with_data} of {len(days)} calendar "
-                     "days had no data (weekends/holidays).")
+        notes.append(f"{len(days) - days_with_data} de {len(days)} días de "
+                     "calendario no tuvieron datos (fines de semana o "
+                     "feriados).")
+    if cfg.get("mode") != "demo" and days_with_data == 0:
+        raise RuntimeError(
+            "Ningún día del rango devolvió datos. Revisá el símbolo, el "
+            "dataset y las fechas (el mercado pudo estar cerrado).")
 
+    sizes_n = totals["sweeps"]
     report = {
         "config": {k: cfg.get(k) for k in
                    ("mode", "dataset", "symbol", "stype_in", "days",
@@ -406,19 +499,19 @@ def run_backtest(cfg: dict,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "tick": tick,
         "horizon_labels": [h[0] for h in HORIZONS],
-        "totals": {"sweeps": len(sweep_rows), "buy": n_buy, "sell": n_sell,
-                   "trades": total_trades, "days": len(days),
-                   "days_with_data": days_with_data,
-                   "avg_sweep_size": round(statistics.fmean(sizes), 1)
-                   if sizes else None,
-                   "max_sweep_size": max(sizes) if sizes else None},
-        "daily": day_summaries,
+        "totals": {"sweeps": sizes_n, "buy": totals["buy"],
+                   "sell": totals["sell"], "trades": total_trades,
+                   "days": len(days), "days_with_data": days_with_data,
+                   "avg_sweep_size": round(totals["size_sum"] / sizes_n, 1)
+                   if sizes_n else None,
+                   "max_sweep_size": totals["size_max"] or None},
+        "daily": [daily[d.isoformat()] for d in days],
         "horizons": horizon_stats,
         "top_sweeps": top,
         "sweeps": sweep_rows,
         "notes": notes,
     }
-    report_progress(phase="done", pct=100.0, detail="finished")
+    report_progress(phase="done", pct=100.0, detail="terminado")
     return report
 
 
@@ -427,13 +520,13 @@ def report_to_csv(report: dict) -> str:
     head = ["date", "time_utc", "side", "size", "levels", "vwap",
             "px_min", "px_max", "trades"]
     head += [f"move_ticks_{lb}" for lb in labels]
-    lines = [",".join(head)]
-    for r in report["sweeps"]:
+    lines = ["sep=,", ",".join(head)]   # sep= hint keeps Excel happy in
+    for r in report["sweeps"]:          # comma-decimal locales
         t = dt.datetime.fromtimestamp(r["ts"] / 1e9,
                                       dt.timezone.utc).strftime("%H:%M:%S.%f")
         row = [r["date"], t, r["side"], str(r["size"]), str(r["levels"]),
-               f'{r["vwap"]:.6f}', f'{r["px_min"]}', f'{r["px_max"]}',
-               str(r["trades"])]
+               f'{r["vwap"]:.6f}', format(r["px_min"], ".10g"),
+               format(r["px_max"], ".10g"), str(r["trades"])]
         row += ["" if v is None else str(v) for v in r.get("fwd_ticks", [])]
         lines.append(",".join(row))
     return "\n".join(lines) + "\n"

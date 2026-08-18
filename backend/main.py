@@ -33,8 +33,8 @@ from pathlib import Path
 from typing import List, Optional
 
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 import backtest as bt
@@ -258,15 +258,34 @@ async def ws_endpoint(ws: WebSocket) -> None:
 # ---------------------------------------------------------------------------
 
 _jobs: dict = {}          # job_id -> job state dict
+JOB_TTL_S = 900           # evict finished jobs from memory (disk remains)
+MAX_RUNNING_JOBS = 2
 
 
 def _report_path(job_id: str) -> Path:
     return bt.RESULTS_DIR / f"{job_id}.json"
 
 
+def _csv_path(job_id: str) -> Path:
+    return bt.RESULTS_DIR / f"{job_id}.csv"
+
+
 def _public_report(report: dict) -> dict:
     """The UI payload: everything except the bulky per-sweep rows."""
     return {k: v for k, v in report.items() if k != "sweeps"}
+
+
+def _persist_report(job_id: str, report: dict) -> None:
+    bt.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    _report_path(job_id).write_text(json.dumps(report))
+    _csv_path(job_id).write_text(bt.report_to_csv(report))
+
+
+def _load_public(job_id: str) -> Optional[dict]:
+    path = _report_path(job_id)
+    if not path.exists():
+        return None
+    return _public_report(json.loads(path.read_text()))
 
 
 async def _run_backtest_job(job_id: str, cfg: dict) -> None:
@@ -278,8 +297,7 @@ async def _run_backtest_job(job_id: str, cfg: dict) -> None:
     try:
         report = await asyncio.to_thread(
             bt.run_backtest, cfg, on_progress, job["cancel"].is_set)
-        bt.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        _report_path(job_id).write_text(json.dumps(report))
+        await asyncio.to_thread(_persist_report, job_id, report)
         job["report"] = _public_report(report)
         job["state"] = "done"
     except bt.Cancelled:
@@ -287,6 +305,11 @@ async def _run_backtest_job(job_id: str, cfg: dict) -> None:
     except Exception as exc:
         job["state"] = "error"
         job["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        # keep the entry around long enough for the UI to fetch the result,
+        # then drop it — the JSON on disk still serves late status requests
+        asyncio.get_running_loop().call_later(
+            JOB_TTL_S, _jobs.pop, job_id, None)
 
 
 @app.post("/backtest/estimate")
@@ -299,6 +322,12 @@ async def backtest_estimate(cfg: dict) -> dict:
 
 @app.post("/backtest")
 async def backtest_start(cfg: dict) -> dict:
+    running = sum(1 for j in _jobs.values() if j["state"] == "running")
+    if running >= MAX_RUNNING_JOBS:
+        raise HTTPException(
+            status_code=429,
+            detail="Ya hay backtests corriendo. Esperá a que terminen "
+                   "(o cancelalos) y probá de nuevo.")
     job_id = uuid.uuid4().hex[:12]
     _jobs[job_id] = {
         "id": job_id, "state": "running",
@@ -317,11 +346,10 @@ async def backtest_start(cfg: dict) -> dict:
 async def backtest_status(job_id: str) -> dict:
     job = _jobs.get(job_id)
     if job is None:
-        path = _report_path(job_id)
-        if path.exists():   # finished in an earlier server life
-            report = json.loads(path.read_text())
+        report = await asyncio.to_thread(_load_public, job_id)
+        if report is not None:   # finished in an earlier server life
             return {"id": job_id, "state": "done", "progress": {"pct": 100},
-                    "report": _public_report(report)}
+                    "report": report}
         return {"id": job_id, "state": "unknown"}
     return {k: job[k] for k in
             ("id", "state", "progress", "error", "report", "config")}
@@ -336,19 +364,22 @@ async def backtest_cancel(job_id: str) -> dict:
 
 
 @app.get("/backtest/{job_id}/csv")
-async def backtest_csv(job_id: str) -> PlainTextResponse:
+async def backtest_csv(job_id: str):
+    csv_path = _csv_path(job_id)
+    headers = {"Content-Disposition":
+               f'attachment; filename="sweeps_backtest_{job_id}.csv"'}
+    if csv_path.exists():   # pre-written at job completion
+        return FileResponse(str(csv_path), media_type="text/csv",
+                            headers=headers)
     path = _report_path(job_id)
     if not path.exists():
         return PlainTextResponse("not found", status_code=404)
-    report = json.loads(path.read_text())
-    return PlainTextResponse(
-        bt.report_to_csv(report), media_type="text/csv",
-        headers={"Content-Disposition":
-                 f'attachment; filename="sweeps_backtest_{job_id}.csv"'})
+    csv = await asyncio.to_thread(
+        lambda: bt.report_to_csv(json.loads(path.read_text())))
+    return PlainTextResponse(csv, media_type="text/csv", headers=headers)
 
 
-@app.get("/backtests")
-async def backtest_list() -> dict:
+def _list_finished() -> list:
     items = []
     if bt.RESULTS_DIR.exists():
         for p in sorted(bt.RESULTS_DIR.glob("*.json"),
@@ -361,6 +392,12 @@ async def backtest_list() -> dict:
                               "totals": r.get("totals")})
             except Exception:
                 continue
+    return items
+
+
+@app.get("/backtests")
+async def backtest_list() -> dict:
+    items = await asyncio.to_thread(_list_finished)
     running = [{"id": j["id"], "state": j["state"], "config": j["config"]}
                for j in _jobs.values() if j["state"] == "running"]
     return {"running": running, "finished": items}

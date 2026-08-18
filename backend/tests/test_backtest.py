@@ -82,8 +82,99 @@ def test_csv_export_shape():
     report = bt.run_backtest(cfg)
     csv = bt.report_to_csv(report)
     lines = csv.strip().split("\n")
-    assert len(lines) == 1 + report["totals"]["sweeps"]
-    header = lines[0].split(",")
+    assert lines[0] == "sep=,"          # Excel hint for comma-decimal locales
+    assert len(lines) == 2 + report["totals"]["sweeps"]
+    header = lines[1].split(",")
     assert header[:3] == ["date", "time_utc", "side"]
     assert header[-1] == "move_ticks_15m"
-    assert all(len(l.split(",")) == len(header) for l in lines[1:])
+    assert all(len(l.split(",")) == len(header) for l in lines[2:])
+
+
+def test_outcome_tracker_discards_resolution_across_session_gap():
+    S = 1_000_000_000
+    tr = bt.OutcomeTracker([("10s", 10 * S), ("15m", 900 * S)])
+    row = {"ts": 0}
+    tr.add(row)
+    # next trade is 17 hours later (overnight gap): both deadlines are far
+    # beyond their staleness cap, so neither may record the next open
+    tr.on_trade(17 * 3600 * S, 6500.0)
+    assert row["fwd_px"] == [None, None]
+    assert tr.expired == 2
+    # but a resolution within the cap (deadline + <=2x horizon) counts
+    row2 = {"ts": 20 * 3600 * S}
+    tr.add(row2)
+    tr.on_trade(20 * 3600 * S + 25 * S, 6501.0)     # 10s deadline + 15s
+    assert row2["fwd_px"][0] == 6501.0
+
+
+class _TapeSource:
+    """Fixed tape for wiring tests."""
+
+    def __init__(self, tape):
+        self.tape = tape                    # {date_iso: [(ts,px,sz,side)]}
+
+    def day_trades(self, day):
+        return iter(self.tape.get(day.isoformat(), []))
+
+
+def test_gap_closing_trade_resolves_the_closed_sweep(monkeypatch):
+    # buy chain at t0; the next buy print 15s later closes it AND is the
+    # first trade at/after the 10s deadline — it must resolve that horizon
+    S = 1_000_000_000
+    t0 = int(dt.datetime(2026, 8, 12, 14, 0,
+                         tzinfo=dt.timezone.utc).timestamp() * S)
+    tape = {"2026-08-12": [
+        (t0, 100.00, 60, "B"),
+        (t0, 100.25, 60, "B"),
+        (t0 + 15 * S, 101.00, 1, "B"),
+    ]}
+    monkeypatch.setattr(bt, "make_source", lambda cfg: _TapeSource(tape))
+    report = bt.run_backtest({"mode": "demo", "days": 1,
+                              "end_date": "2026-08-12", "tick": 0.25,
+                              "params": {"min_levels": 2, "min_size": 0,
+                                         "window_ms": 200}})
+    rows = [r for r in report["sweeps"] if r["size"] == 120]
+    assert len(rows) == 1
+    # 10s horizon resolved by the closing print at 101.00, not lost
+    assert rows[0]["fwd_px"][0] == 101.00
+
+
+def test_totals_consistent_when_row_cap_overflows(monkeypatch):
+    monkeypatch.setattr(bt, "MAX_SWEEP_ROWS", 5)
+    cfg = {"mode": "demo", "days": 1, "end_date": "2026-08-12",
+           "params": {"min_levels": 2, "min_size": 50}}
+    report = bt.run_backtest(cfg)
+    t = report["totals"]
+    assert len(report["sweeps"]) == 5
+    assert t["sweeps"] > 5                      # true count, not the cap
+    assert t["buy"] + t["sell"] == t["sweeps"]
+    daily_total = sum(d["sweeps_buy"] + d["sweeps_sell"]
+                      for d in report["daily"])
+    assert daily_total == t["sweeps"]           # tiles match the bar chart
+    # top sweeps ranked over ALL sweeps, not just the capped rows
+    assert report["top_sweeps"][0]["size"] == t["max_sweep_size"]
+    assert any("primeros" in n for n in report["notes"])
+
+
+def test_no_per_day_finalize_chain_spans_midnight(monkeypatch):
+    # a chain printing right up to 23:59:59.99 must NOT be force-closed at
+    # the file boundary; the next day's print continues/closes it normally
+    S = 1_000_000_000
+    t0 = int(dt.datetime(2026, 8, 11, 23, 59, 59, 900_000,
+                         tzinfo=dt.timezone.utc).timestamp() * S)
+    tape = {
+        "2026-08-11": [(t0, 100.00, 60, "B"),
+                       (t0 + int(0.05 * S), 100.25, 60, "B")],
+        # 3rd print lands 50ms past midnight, within the 200ms window
+        "2026-08-12": [(t0 + int(0.15 * S), 100.50, 60, "B"),
+                       (t0 + 30 * S, 100.50, 1, "A")],
+    }
+    monkeypatch.setattr(bt, "make_source", lambda cfg: _TapeSource(tape))
+    report = bt.run_backtest({"mode": "demo", "days": 2,
+                              "end_date": "2026-08-12", "tick": 0.25,
+                              "params": {"min_levels": 2, "min_size": 0,
+                                         "window_ms": 200}})
+    big = [r for r in report["sweeps"] if r["side"] == "B"]
+    assert len(big) == 1                       # ONE sweep, not split in two
+    assert big[0]["size"] == 180 and big[0]["levels"] == 3
+    assert big[0]["date"] == "2026-08-12"      # dated by its own ts_end
