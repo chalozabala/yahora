@@ -4,6 +4,9 @@ La versión que estás corriendo se ve abajo a la derecha en la app.
 Si no coincide con la última de esta lista, corré `actualizar.bat`
 (Windows) o `./actualizar.sh` (Mac/Linux).
 
+- **2026.08.19-9** — Arregla `must call subscribe() before starting live
+  client`: el iterador de prueba se recolectaba y su destructor mataba la
+  conexión recién validada. Ahora hay un solo iterador y se conserva.
 - **2026.08.19-8** — Arreglo real del caso "Not authorized for mbp-10":
   el gateway rechaza el esquema *dentro* del stream, no al suscribir, así
   que ahora la app escucha ese rechazo y baja sola a MBP-1 (o a solo

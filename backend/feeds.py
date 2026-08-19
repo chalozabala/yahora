@@ -291,6 +291,7 @@ class LiveFeed:
         self.depth = normalize_depth(depth)
         self.depth_used: Optional[str] = None
         self._client = None
+        self._it = None          # referencia fuerte: ver events()
 
     def stop(self) -> None:
         client = self._client
@@ -330,10 +331,16 @@ class LiveFeed:
         for schema in self._candidatos():
             client = await asyncio.to_thread(self._connect, schema)
             self._client = client
-            pendientes, rechazado = await self._probar(client, symbol_map)
+            # CUIDADO: LiveIterator arranca el cliente al crearse y lo
+            # TERMINA en su __del__. Si se lo deja como variable local, el
+            # recolector de basura mata la conexion en cuanto sale de
+            # alcance. Por eso se crea uno solo y se guarda en self.
+            self._it = client.__aiter__()
+            pendientes, rechazado = await self._probar(self._it, symbol_map)
             if rechazado:
                 # el plan no incluye este libro: probamos el siguiente
-                self.stop()
+                self._it = None
+                self._terminar(client)
                 continue
 
             self.depth_used = schema
@@ -355,7 +362,13 @@ class LiveFeed:
             for ev in pendientes:
                 yield ev
             try:
-                async for rec in client:
+                # se sigue con EL MISMO iterador: crear otro llamaria a
+                # start() sobre un cliente ya en marcha y explotaria
+                while True:
+                    try:
+                        rec = await self._it.__anext__()
+                    except StopAsyncIteration:
+                        break
                     for ev in _record_events(rec, symbol_map):
                         yield ev
             finally:
@@ -371,12 +384,20 @@ class LiveFeed:
                           "libro y también los trades. Revisá que tu plan "
                           "incluya datos en vivo de este mercado."}
 
-    async def _probar(self, client, symbol_map: dict):
+    @staticmethod
+    def _terminar(client) -> None:
+        for metodo in ("terminate", "stop"):
+            try:
+                getattr(client, metodo)()
+                return
+            except Exception:
+                continue
+
+    async def _probar(self, it, symbol_map: dict):
         """Escucha el arranque del stream. Devuelve (eventos, rechazado):
         'rechazado' es True sólo si el gateway rechazó el esquema de libro,
         que es el caso recuperable pidiendo uno más chico."""
         pendientes: list = []
-        it = client.__aiter__()
         loop = asyncio.get_running_loop()
         limite = loop.time() + self.PRUEBA_S
         while True:

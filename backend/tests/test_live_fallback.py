@@ -15,32 +15,67 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import feeds  # noqa: E402
 
 
-class _ClienteFalso:
-    """Imita al Live de databento: acepta cualquier subscribe y despues
-    manda el rechazo por el stream, como hace el gateway de verdad."""
+class _IteradorFalso:
+    """Imita a LiveIterator: arranca el cliente al crearse y lo TERMINA en
+    __del__. Esa segunda parte es la que rompió en producción."""
 
-    def __init__(self, sin_autorizar=("mbp-10",)):
+    def __init__(self, cliente, guion):
+        cliente.start()
+        self._cliente = cliente
+        self._guion = list(guion)
+
+    def __del__(self):
+        try:
+            self._cliente.terminate()
+        except Exception:
+            pass
+
+    async def __anext__(self):
+        if self._guion:
+            return self._guion.pop(0)
+        while True:                      # vivo, esperando datos
+            await asyncio.sleep(0.05)
+
+
+class _ClienteFalso:
+    """Imita al Live de databento con su contrato real: acepta cualquier
+    subscribe, manda el rechazo por el stream, y NO se puede volver a
+    arrancar despues de terminate()."""
+
+    def __init__(self, sin_autorizar=("mbp-10",), guion=None):
         self.sin_autorizar = sin_autorizar
         self.suscripciones = []
-        self.detenido = False
+        self.conectado = True
+        self.arrancado = False
+        self.terminado = False
+        self._guion = guion
 
     def subscribe(self, dataset, schema, stype_in, symbols):
-        self.suscripciones.append(schema)   # nunca levanta excepcion
+        self.suscripciones.append(schema)
+
+    def start(self):
+        if not self.conectado:
+            raise ValueError("must call subscribe() before starting live client")
+        if self.arrancado:
+            raise ValueError("client is already started")
+        self.arrancado = True
 
     def stop(self):
-        self.detenido = True
+        self.arrancado = False
+
+    def terminate(self):
+        self.terminado = True
+        self.conectado = False
+        self.arrancado = False
 
     def __aiter__(self):
-        return self._gen()
-
-    async def _gen(self):
-        malos = [s for s in self.suscripciones if s in self.sin_autorizar]
-        if malos:
-            yield ("error", f"Not authorized for {malos[0]} schema")
-            return
-        yield ("trade", None)
-        while True:                          # se queda vivo como el real
-            await asyncio.sleep(0.05)
+        if self._guion is not None:
+            guion = self._guion
+        else:
+            malos = [s for s in self.suscripciones if s in self.sin_autorizar]
+            guion = ([("error", f"Not authorized for {malos[0]} schema")]
+                     if malos else [("trade", None)])
+        return _IteradorFalso(self, guion)
 
 
 def _eventos_falsos(rec, symbol_map):
@@ -137,16 +172,55 @@ def test_sigue_solo_con_trades_si_no_hay_ningun_libro(monkeypatch):
 
 def test_un_error_de_clave_no_se_disfraza_de_problema_de_libro(monkeypatch):
     def _conectar(self, schema):
-        c = _ClienteFalso(sin_autorizar=())
+        c = _ClienteFalso(guion=[("error", "Invalid API key")])
         c.subscribe(None, "trades", None, None)
         return c
 
-    async def _gen_malo(self):
-        yield ("error", "Invalid API key")
-
     monkeypatch.setattr(feeds.LiveFeed, "_connect", _conectar)
-    monkeypatch.setattr(_ClienteFalso, "_gen", _gen_malo)
     feed = feeds.LiveFeed(dataset="GLBX.MDP3", symbol="ES.v.0")
     evs = asyncio.run(_correr(feed))
     errores = [e for e in evs if e["type"] == "error"]
     assert errores and "Invalid API key" in errores[0]["message"]
+
+
+def test_no_se_mata_la_conexion_al_terminar_la_prueba(monkeypatch):
+    """Regresión del error real: 'must call subscribe() before starting
+    live client'. El iterador de prueba se recolectaba, su __del__ llamaba
+    a terminate(), y al seguir con el stream se intentaba arrancar un
+    cliente ya muerto. El iterador tiene que ser uno solo y sobrevivir."""
+    import gc
+
+    clientes = []
+
+    def _conectar(self, schema):
+        c = _ClienteFalso(sin_autorizar=())     # todo autorizado
+        c.subscribe(None, "trades", None, None)
+        clientes.append(c)
+        return c
+
+    monkeypatch.setattr(feeds.LiveFeed, "_connect", _conectar)
+    feed = feeds.LiveFeed(dataset="GLBX.MDP3", symbol="ES.v.0")
+
+    async def _con_basura():
+        salida = []
+
+        async def _juntar():
+            async for ev in feed.events():
+                salida.append(ev)
+                gc.collect()      # fuerza el escenario que rompio
+        t = asyncio.ensure_future(_juntar())
+        try:
+            await asyncio.wait_for(asyncio.shield(t), timeout=4)
+        except asyncio.TimeoutError:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+        return salida
+
+    evs = asyncio.run(_con_basura())
+    assert not clientes[0].terminado, "se mato la conexion que servia"
+    errores = [e for e in evs if e["type"] == "error"]
+    assert not errores, f"no deberia haber error: {errores}"
+    assert [e for e in evs if e["type"] == "trade"]
