@@ -38,8 +38,24 @@ footprint of a large market order punching through the book.
 | Mode | Source | Needs |
 |------|--------|-------|
 | Demo | synthetic book + trades with periodic sweeps | nothing |
-| Live | Databento live gateway (`trades` + `mbp-10`) | `DATABENTO_API_KEY` |
-| Replay | Databento historical `timeseries.get_range`, replayed on a clock | `DATABENTO_API_KEY` |
+| Live | Databento live gateway | key + live entitlement |
+| Replay | Databento historical `timeseries.get_range`, replayed on a clock | key (pay per use) |
+| Backtest | Databento historical `trades` only | key (pay per use) |
+
+**Qué esquema de datos hace falta.** La detección de sweeps usa
+únicamente **`trades`** (nivel L1), que está en prácticamente todos los
+planes — el backtest no necesita nada más. El libro sirve solo para
+pintar el mapa de calor, y es configurable:
+
+| Libro | Nivel | Qué se ve |
+|-------|-------|-----------|
+| `MBP-10` | L2 | mapa de calor con 10 niveles por lado |
+| `MBP-1` | L1 | cinta con la mejor oferta y demanda |
+| sin libro | — | solo trades y marcas de sweeps |
+
+Por defecto va en **automático**: intenta MBP-10, y si tu plan no lo
+incluye baja a MBP-1 y después a solo trades, avisándote en pantalla en
+vez de fallar.
 
 Default instrument: `ES.v.0` (CME E-mini S&P 500, highest-volume contract,
 continuous symbology) on dataset `GLBX.MDP3`. Any Databento

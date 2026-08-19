@@ -214,7 +214,9 @@ def _record_events(rec, symbol_map: dict) -> list:
             side = side if side in ("B", "A") else "N"
             events.append({"type": "trade", "ts": rec.ts_event, "px": px,
                            "sz": rec.size, "side": side})
-    elif isinstance(rec, dbn.MBP10Msg):
+    elif isinstance(rec, (dbn.MBP10Msg, dbn.MBP1Msg)):
+        # MBP-1 y MBP-10 tienen la misma forma: cambia cuantos niveles
+        # trae `levels`. Asi el grafico anda con el plan que tengas.
         bids, asks = [], []
         for lvl in rec.levels:
             bpx, apx = _px(lvl.bid_px), _px(lvl.ask_px)
@@ -242,15 +244,32 @@ def _record_events(rec, symbol_map: dict) -> list:
     return events
 
 
+# Esquemas de profundidad, del mas rico al mas barato. Detectar sweeps NO
+# necesita ninguno (alcanza con `trades`); la profundidad es solo para
+# pintar el heatmap. MBP-10 suele requerir un plan superior, asi que hay
+# que poder caer a MBP-1 o quedarse sin libro en vez de fallar entero.
+DEPTH_SCHEMAS = ("mbp-10", "mbp-1")
+
+
+def normalize_depth(depth: Optional[str]) -> str:
+    depth = (depth or "auto").strip().lower()
+    if depth in DEPTH_SCHEMAS or depth in ("auto", "none"):
+        return depth
+    return "auto"
+
+
 class LiveFeed:
-    """Databento live gateway → trades + mbp-10 for one symbol."""
+    """Databento live gateway → trades (+ libro si el plan lo permite)."""
 
     def __init__(self, dataset: str, symbol: str, stype_in: str = "continuous",
-                 api_key: Optional[str] = None):
+                 api_key: Optional[str] = None, depth: str = "auto"):
         self.dataset = dataset
         self.symbol = symbol
         self.stype_in = stype_in
         self.api_key = _get_key(api_key)
+        self.depth = normalize_depth(depth)
+        self.depth_used: Optional[str] = None
+        self.depth_error: Optional[str] = None
         self._client = None
 
     def stop(self) -> None:
@@ -267,9 +286,21 @@ class LiveFeed:
         seconds) and must not stall the server's event loop."""
         db = _import_databento()
         client = db.Live(key=self.api_key, reconnect_policy="reconnect")
-        for schema in ("trades", "mbp-10"):
-            client.subscribe(dataset=self.dataset, schema=schema,
-                             stype_in=self.stype_in, symbols=[self.symbol])
+        # los trades son lo unico imprescindible
+        client.subscribe(dataset=self.dataset, schema="trades",
+                         stype_in=self.stype_in, symbols=[self.symbol])
+
+        candidatos = (DEPTH_SCHEMAS if self.depth == "auto"
+                      else () if self.depth == "none" else (self.depth,))
+        for schema in candidatos:
+            try:
+                client.subscribe(dataset=self.dataset, schema=schema,
+                                 stype_in=self.stype_in,
+                                 symbols=[self.symbol])
+                self.depth_used = schema
+                break
+            except Exception as exc:      # plan sin ese esquema, p.ej.
+                self.depth_error = str(exc)
         return client
 
     async def events(self) -> AsyncIterator[dict]:
@@ -278,9 +309,18 @@ class LiveFeed:
                "detail": f"connecting to databento {self.dataset}…"}
         client = await asyncio.to_thread(self._connect)
         self._client = client
+        libro = self.depth_used or "sin libro"
         yield {"type": "status", "state": "running", "mode": "live",
-               "symbol": self.symbol,
-               "detail": f"databento live {self.dataset}"}
+               "symbol": self.symbol, "depth": self.depth_used,
+               "detail": f"databento live {self.dataset} · {libro}"}
+        if self.depth_used is None and self.depth != "none":
+            yield {"type": "status", "state": "aviso",
+                   "detail": "Tu plan no incluye datos de libro: se ven los "
+                             "trades y los sweeps, pero sin mapa de calor."}
+        elif self.depth_used == "mbp-1":
+            yield {"type": "status", "state": "aviso",
+                   "detail": "Libro de 1 nivel (MBP-1): el mapa de calor "
+                             "muestra solo la mejor oferta y demanda."}
         symbol_map: dict = {}
         try:
             async for rec in client:
@@ -299,7 +339,8 @@ class ReplayFeed:
 
     def __init__(self, dataset: str, symbol: str, start: str, end: str,
                  stype_in: str = "continuous", speed: float = 1.0,
-                 api_key: Optional[str] = None, limit: int = 2_000_000):
+                 api_key: Optional[str] = None, limit: int = 2_000_000,
+                 depth: str = "auto"):
         self.dataset = dataset
         self.symbol = symbol
         self.start = start
@@ -308,6 +349,8 @@ class ReplayFeed:
         self.speed = max(0.1, min(1000.0, speed))
         self.api_key = _get_key(api_key)
         self.limit = limit
+        self.depth = normalize_depth(depth)
+        self.depth_used: Optional[str] = None
         self._stop = asyncio.Event()
 
     def stop(self) -> None:
@@ -316,14 +359,25 @@ class ReplayFeed:
     def _fetch(self):
         db = _import_databento()
         client = db.Historical(key=self.api_key)
-        per_schema = {}
-        for schema in ("trades", "mbp-10"):
+        def traer(schema):
             store = client.timeseries.get_range(
                 dataset=self.dataset, schema=schema,
                 symbols=[self.symbol], stype_in=self.stype_in,
                 start=self.start, end=self.end, limit=self.limit)
-            per_schema[schema] = [r for r in store
-                                  if hasattr(r, "ts_event")]
+            return [r for r in store if hasattr(r, "ts_event")]
+
+        # los trades son imprescindibles; el libro es un extra que depende
+        # del plan contratado, asi que si no esta seguimos sin el
+        per_schema = {"trades": traer("trades")}
+        candidatos = (DEPTH_SCHEMAS if self.depth == "auto"
+                      else () if self.depth == "none" else (self.depth,))
+        for schema in candidatos:
+            try:
+                per_schema[schema] = traer(schema)
+                self.depth_used = schema
+                break
+            except Exception:
+                continue
         # a schema that hit the record limit stops mid-range; trim the
         # others to the same instant so the replay stays synchronized
         truncated = [s for s, recs in per_schema.items()
@@ -351,9 +405,15 @@ class ReplayFeed:
                    "detail": f"record limit hit for {', '.join(truncated)}; "
                              f"replay trimmed to {cutoff} ns — "
                              "request a shorter range for full coverage"}
+        libro = self.depth_used or "sin libro"
         yield {"type": "status", "state": "running", "mode": "replay",
-               "symbol": self.symbol,
-               "detail": f"replaying {len(recs)} records at {self.speed}x"}
+               "symbol": self.symbol, "depth": self.depth_used,
+               "detail": f"reproduciendo {len(recs)} registros a "
+                         f"{self.speed}x · {libro}"}
+        if self.depth_used is None and self.depth != "none":
+            yield {"type": "status", "state": "aviso",
+                   "detail": "Tu plan no incluye datos de libro: se ven los "
+                             "trades y los sweeps, pero sin mapa de calor."}
         symbol_map: dict = {}
         t0_data = recs[0].ts_event
         t0_wall = time.monotonic()
@@ -379,9 +439,10 @@ def make_feed(cfg: dict):
     stype_in = (cfg.get("stype_in") or "continuous").strip()
     if mode == "demo":
         return DemoFeed(symbol="DEMO.ES")
+    depth = cfg.get("depth", "auto")
     if mode == "live":
         return LiveFeed(dataset=dataset, symbol=symbol, stype_in=stype_in,
-                        api_key=cfg.get("api_key") or None)
+                        api_key=cfg.get("api_key") or None, depth=depth)
     if mode == "replay":
         start = cfg.get("start")
         end = cfg.get("end")
@@ -389,5 +450,5 @@ def make_feed(cfg: dict):
             raise RuntimeError("Replay mode needs 'start' and 'end' (ISO 8601).")
         return ReplayFeed(dataset=dataset, symbol=symbol, start=start, end=end,
                           stype_in=stype_in, speed=float(cfg.get("speed", 1.0)),
-                          api_key=cfg.get("api_key") or None)
+                          api_key=cfg.get("api_key") or None, depth=depth)
     raise RuntimeError(f"Unknown mode '{mode}'")

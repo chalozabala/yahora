@@ -197,3 +197,36 @@ def test_no_per_day_finalize_chain_spans_midnight(monkeypatch):
     assert len(big) == 1                       # ONE sweep, not split in two
     assert big[0]["size"] == 180 and big[0]["levels"] == 3
     assert big[0]["date"] == "2026-08-12"      # dated by its own ts_end
+
+
+def test_depth_normalization():
+    from feeds import normalize_depth as n
+    assert n(None) == "auto"
+    assert n("auto") == "auto"
+    assert n("mbp-1") == "mbp-1"
+    assert n("MBP-10") == "mbp-10"
+    assert n("none") == "none"
+    assert n("cualquier-cosa") == "auto"     # nunca rompe
+
+
+def test_live_feed_depth_is_configurable(monkeypatch):
+    """El plan del usuario decide qué libro se puede pedir: MBP-10 requiere
+    nivel L2, y pedirlo sin tenerlo hacía fallar todo el feed."""
+    monkeypatch.setenv("DATABENTO_API_KEY", "db-test")
+    from feeds import make_feed
+    f = make_feed({"mode": "live", "symbol": "ES.v.0", "depth": "mbp-1"})
+    assert f.depth == "mbp-1"
+    f2 = make_feed({"mode": "live", "symbol": "ES.v.0"})
+    assert f2.depth == "auto"          # por defecto, prueba de mayor a menor
+    f3 = make_feed({"mode": "live", "symbol": "ES.v.0", "depth": "none"})
+    assert f3.depth == "none"
+
+
+def test_backtest_only_needs_trades():
+    """La pestaña Backtest tiene que andar con un plan sin datos de libro:
+    la detección de sweeps se hace con los prints, no con el libro."""
+    import inspect
+    import backtest as bt_mod
+    fuente = inspect.getsource(bt_mod.DatabentoSource)
+    assert 'schema="trades"' in fuente
+    assert "mbp" not in fuente.lower()

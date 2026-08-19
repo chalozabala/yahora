@@ -178,6 +178,7 @@ function sendStart() {
     cfg.dataset = $("dataset").value.trim();
     cfg.symbol = $("symbol").value.trim();
     cfg.stype_in = $("stype").value;
+    cfg.depth = $("depth").value;
   }
   if (mode === "replay") {
     cfg.start = $("rstart").value.trim();
@@ -244,6 +245,11 @@ function ingest(ev) {
         S.contract = null;
         setConn("on", S.feedLabel);
         $("feedinfo").textContent = ev.detail || "";
+      } else if (ev.state === "aviso") {
+        // el feed anda, pero con menos datos de los ideales: se avisa sin
+        // pintarlo como error, porque los sweeps igual funcionan
+        showFeedStatus("Andando con datos limitados", ev.detail || "");
+        setTimeout(hideFeedError, 9000);
       } else if (ev.state === "mapped") {
         // Databento resolvió el símbolo continuo al contrato real en vigencia
         S.contract = ev.contract;
@@ -412,15 +418,23 @@ function ingestSnapshot(ev) {
   S.cols.push({ t, bids, asks, bb, ba });
   if (S.cols.length > MAX_COLS) S.cols.splice(0, S.cols.length - MAX_COLS);
 
-  // learn the price grid from adjacent ask levels
-  if (asks.length >= 2) {
-    let d = Infinity;
-    for (let i = 1; i < asks.length; i++) {
-      const dd = Math.abs(asks[i][0] - asks[i - 1][0]);
-      if (dd > 1e-12 && dd < d) d = dd;
-    }
-    if (isFinite(d)) S.tick = S.tick ? Math.min(S.tick, d) : d;
+  // Aprender el tamaño del tick. Con MBP-10 sale de niveles contiguos;
+  // con MBP-1 solo hay un nivel por lado, así que también se mira el
+  // spread. (Los trades aportan la otra fuente, en ingestTrade.)
+  let d = Infinity;
+  for (let i = 1; i < asks.length; i++) {
+    const dd = Math.abs(asks[i][0] - asks[i - 1][0]);
+    if (dd > 1e-12 && dd < d) d = dd;
   }
+  for (let i = 1; i < bids.length; i++) {
+    const dd = Math.abs(bids[i][0] - bids[i - 1][0]);
+    if (dd > 1e-12 && dd < d) d = dd;
+  }
+  if (bb && ba) {
+    const spread = Math.abs(ba - bb);       // suele ser exactamente 1 tick
+    if (spread > 1e-12 && spread < d) d = spread;
+  }
+  if (isFinite(d)) S.tick = S.tick ? Math.min(S.tick, d) : d;
 
   const mid = bb && ba ? (bb + ba) / 2 : (bb || ba);
   if (mid) {
@@ -439,6 +453,12 @@ function ingestTrade(ev) {
   bumpClock(t);
   S.trades.push({ t, px: ev.px, sz: ev.sz, side: ev.side });
   if (S.trades.length > MAX_TRADES) S.trades.splice(0, S.trades.length - MAX_TRADES);
+  // los precios negociados también revelan la grilla: imprescindible
+  // cuando el plan no da libro y no hay niveles que comparar
+  if (S.lastPx && ev.px !== S.lastPx) {
+    const d = Math.abs(ev.px - S.lastPx);
+    if (d > 1e-12 && (!S.tick || d < S.tick)) S.tick = d;
+  }
   S.lastPx = ev.px;
   S.lastSide = ev.side;
 }
