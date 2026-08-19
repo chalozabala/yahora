@@ -915,6 +915,34 @@ applyCssColors();
   $("rend").value = `${day}T14:40Z`;
 })();
 
+// La version que trae ESTA pagina viene del sello ?v= que el servidor le
+// pone al <script>. Si no coincide con la del servidor (o directamente no
+// existe, porque la pagina salio del cache de una version anterior), hay
+// que avisar: mostrar solo la version del servidor haria creer que estas
+// viendo lo ultimo cuando en realidad el navegador te sirve lo viejo.
+const PAGE_VERSION = (() => {
+  const el = document.querySelector('script[src*="app.js"]');
+  const m = el && /[?&]v=([^&"]+)/.exec(el.getAttribute("src") || "");
+  return m ? m[1] : null;
+})();
+
+fetch("/version")
+  .then((r) => r.json())
+  .then((d) => {
+    const el = $("appversion");
+    if (PAGE_VERSION === d.version) {
+      el.textContent = `v${d.version}`;
+      el.title = "Version de la app";
+      return;
+    }
+    el.textContent = "⚠ pagina vieja — apreta Ctrl+F5";
+    el.className = "stale";
+    el.title = PAGE_VERSION
+      ? `La pagina es v${PAGE_VERSION} y el servidor v${d.version}`
+      : `El navegador esta sirviendo una copia guardada. Servidor: v${d.version}`;
+  })
+  .catch(() => { $("appversion").textContent = ""; });
+
 // auto-start the demo so the page shows something immediately
 connect();
 setTimeout(() => { if (!S.wantRun) sendStart(); }, 400);

@@ -1,0 +1,13 @@
+# Historial de versiones
+
+La versión que estás corriendo se ve abajo a la derecha en la app.
+Si no coincide con la última de esta lista, corré `actualizar.bat`
+(Windows) o `./actualizar.sh` (Mac/Linux).
+
+- **2026.08.19-4** — Botón de actualizar (`actualizar.bat`), número de
+  versión visible en la app y anti-caché del navegador.
+- **2026.08.19-3** — Selector de instrumentos (ES, NQ, micros, etc.) y
+  muestra el contrato vigente al que resuelve (ej. `NQ.v.0 → NQZ6`).
+- **2026.08.19-2** — Instalación liviana: el módulo de datos reales
+  (~250 MB) pasó a un paso aparte, `datos-reales.bat`.
+- **2026.08.19-1** — Lanzador de Windows `run.bat`.

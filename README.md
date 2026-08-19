@@ -89,6 +89,22 @@ marcá la casilla *"Add python.exe to PATH"* al instalar). Si falta,
 
 Para frenarlo: cerrá la ventana negra.
 
+### Actualizar a la última versión
+
+Cuando haya cambios nuevos:
+
+* **Windows** → doble clic en `actualizar.bat`
+* **Mac / Linux** → `./actualizar.sh`
+
+Descarga la última versión y la instala encima de tu carpeta **sin tocar
+tu clave (`.env`), lo ya instalado (`.venv`) ni tus backtests guardados**.
+Después abrí `run.bat` y apretá **Ctrl+F5** en el navegador.
+
+La versión que estás corriendo se ve **abajo a la derecha** en la app. Si
+el navegador te está sirviendo una copia guardada vieja, ahí mismo
+aparece un aviso rojo *"página vieja — apretá Ctrl+F5"*, así no te quedás
+mirando una pantalla desactualizada sin darte cuenta.
+
 ### Activar datos reales (Databento)
 
 El arranque de arriba trae solo lo liviano (unos segundos) y el modo

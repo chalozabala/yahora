@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -34,7 +35,7 @@ from typing import List, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import load_env
@@ -48,6 +49,17 @@ from sweeps import SweepDetector, Trade  # noqa: E402
 app = FastAPI(title="Sweeps Web Indicator")
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+VERSION_FILE = Path(__file__).resolve().parent.parent / "VERSION"
+
+
+def _read_version() -> str:
+    try:
+        return VERSION_FILE.read_text(encoding="utf-8-sig").strip() or "desconocida"
+    except OSError:
+        return "desconocida"
+
+
+VERSION = _read_version()
 
 FLUSH_INTERVAL = 0.05          # seconds between websocket batches
 MAX_TRADES_PER_BATCH = 400     # merge beyond this to protect the browser
@@ -433,6 +445,40 @@ async def gexlive():
     _gex_cache["ts"] = time.time()
     _gex_cache["data"] = data
     return data
+
+
+# ---------------------------------------------------------------------------
+# Frontend: index.html is served by hand so the asset URLs can carry the
+# version. Without that, a browser happily keeps serving a cached app.js
+# from a previous release and the user sees an old UI over a new server.
+# ---------------------------------------------------------------------------
+
+_ASSET_RE = re.compile(r'((?:src|href)=")([^"]+\.(?:js|css))(")')
+
+
+@app.get("/version")
+async def version() -> dict:
+    return {"version": VERSION}
+
+
+# GET *and* HEAD: otherwise HEAD falls through to the static mount and
+# answers with the unstamped, cacheable file
+@app.api_route("/index.html", methods=["GET", "HEAD"],
+               response_class=HTMLResponse)
+@app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
+async def index() -> HTMLResponse:
+    try:
+        html = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+    except OSError:
+        return HTMLResponse("<h1>frontend/index.html no encontrado</h1>",
+                            status_code=500)
+    html = _ASSET_RE.sub(rf"\g<1>\g<2>?v={VERSION}\g<3>", html)
+    return HTMLResponse(html, headers={
+        # the page itself must never be cached, or the version stamp it
+        # carries would freeze along with it
+        "Cache-Control": "no-store, must-revalidate",
+        "Pragma": "no-cache",
+    })
 
 
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True),
