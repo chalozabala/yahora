@@ -25,10 +25,17 @@ if not defined PY (
   exit /b 1
 )
 
-if not exist ".venv" (
+REM se comprueba activate.bat, no la carpeta: un entorno a medias existe
+REM como carpeta pero no sirve, y sin esto lo usariamos igual
+if not exist ".venv\Scripts\activate.bat" (
+  if exist ".venv" rd /s /q ".venv"
   echo   Preparando el entorno...
   %PY% -m venv .venv
-  if errorlevel 1 ( echo   No se pudo crear el entorno. & pause & exit /b 1 )
+)
+if not exist ".venv\Scripts\activate.bat" (
+  echo   No se pudo crear el entorno de Python.
+  pause
+  exit /b 1
 )
 call ".venv\Scripts\activate.bat"
 python -m pip install -q --disable-pip-version-check -r backend\requirements.txt
@@ -54,7 +61,14 @@ set "KEY="
 set /p KEY="  Pega la clave y apreta Enter: "
 
 if not "%KEY%"=="" (
-  ^> .env echo DATABENTO_API_KEY=%KEY%
+  > .env echo DATABENTO_API_KEY=%KEY%
+  if not exist ".env" (
+    echo.
+    echo   No se pudo guardar la clave en esta carpeta.
+    echo   Movela a una carpeta tuya ^(ej. Documentos^) y proba de nuevo.
+    pause
+    exit /b 1
+  )
   echo.
   echo   Clave guardada en el archivo .env ^(no se sube a GitHub^).
 )

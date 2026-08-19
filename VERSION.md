@@ -4,6 +4,10 @@ La versión que estás corriendo se ve abajo a la derecha en la app.
 Si no coincide con la última de esta lista, corré `actualizar.bat`
 (Windows) o `./actualizar.sh` (Mac/Linux).
 
+- **2026.08.19-5** — Arreglo crítico: `datos-reales.bat` no guardaba la
+  clave (escribía un error en vez del archivo). Además: no se puede
+  actualizar con Sweeps abierto, detección real de versión desactualizada
+  (página vs servidor), y la app queda accesible sólo desde tu PC.
 - **2026.08.19-4** — Botón de actualizar (`actualizar.bat`), número de
   versión visible en la app y anti-caché del navegador.
 - **2026.08.19-3** — Selector de instrumentos (ES, NQ, micros, etc.) y

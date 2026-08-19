@@ -47,4 +47,5 @@ echo ""
   fi ) >/dev/null 2>&1 &
 
 cd backend
-exec python -m uvicorn main:app --host 0.0.0.0 --port "$PORT"
+# 127.0.0.1: solo esta máquina, no toda la red local
+exec python -m uvicorn main:app --host 127.0.0.1 --port "$PORT"

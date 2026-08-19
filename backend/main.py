@@ -24,6 +24,7 @@ Wire protocol (JSON over /ws):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -52,14 +53,61 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 VERSION_FILE = Path(__file__).resolve().parent.parent / "VERSION"
 
 
+FRONTEND_ASSETS = ("index.html", "app.js", "backtest.js", "style.css")
+
+
 def _read_version() -> str:
     try:
-        return VERSION_FILE.read_text(encoding="utf-8-sig").strip() or "desconocida"
+        raw = VERSION_FILE.read_bytes().decode("utf-8-sig", errors="replace")
     except OSError:
         return "desconocida"
+    return raw.strip() or "desconocida"
+
+
+def _build_key():
+    """Cheap fingerprint of what is on disk right now (mtime + size)."""
+    key = []
+    for path in (VERSION_FILE, *(FRONTEND_DIR / n for n in FRONTEND_ASSETS)):
+        try:
+            st = path.stat()
+            key.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            key.append(None)
+    return tuple(key)
+
+
+def _compute_build_id() -> str:
+    """VERSION plus a hash of the frontend bytes.
+
+    The hash is what makes staleness detectable: an update changes the
+    frontend bytes, so a page built before it carries a different id even
+    if someone forgot to bump VERSION.
+    """
+    digest = hashlib.sha256()
+    for name in FRONTEND_ASSETS:
+        try:
+            digest.update((FRONTEND_DIR / name).read_bytes())
+        except OSError:
+            digest.update(b"<missing>")
+    return f"{_read_version()}.{digest.hexdigest()[:8]}"
+
+
+_build_cache = {"key": None, "id": None}
+
+
+def build_id() -> str:
+    """Current build id, recomputed only when the files change on disk."""
+    key = _build_key()
+    if _build_cache["key"] != key:
+        _build_cache["key"] = key
+        _build_cache["id"] = _compute_build_id()
+    return _build_cache["id"]
 
 
 VERSION = _read_version()
+# what THIS python process was started from: if the files on disk move past
+# it, the running server is stale and only restarting run.bat fixes it
+PROCESS_BUILD = build_id()
 
 FLUSH_INTERVAL = 0.05          # seconds between websocket batches
 MAX_TRADES_PER_BATCH = 400     # merge beyond this to protect the browser
@@ -458,7 +506,13 @@ _ASSET_RE = re.compile(r'((?:src|href)=")([^"]+\.(?:js|css))(")')
 
 @app.get("/version")
 async def version() -> dict:
-    return {"version": VERSION}
+    """What the browser needs to tell 'my page is old' from 'the server
+    is old' — two different problems with two different fixes."""
+    current = build_id()
+    return {"version": _read_version(),
+            "build": current,           # lo que hay en disco ahora
+            "process": PROCESS_BUILD,   # con lo que arranco este servidor
+            "server_stale": current != PROCESS_BUILD}
 
 
 # GET *and* HEAD: otherwise HEAD falls through to the static mount and
@@ -468,11 +522,12 @@ async def version() -> dict:
 @app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     try:
-        html = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+        raw = (FRONTEND_DIR / "index.html").read_bytes()
     except OSError:
         return HTMLResponse("<h1>frontend/index.html no encontrado</h1>",
                             status_code=500)
-    html = _ASSET_RE.sub(rf"\g<1>\g<2>?v={VERSION}\g<3>", html)
+    html = raw.decode("utf-8-sig", errors="replace")
+    html = _ASSET_RE.sub(rf"\g<1>\g<2>?v={build_id()}\g<3>", html)
     return HTMLResponse(html, headers={
         # the page itself must never be cached, or the version stamp it
         # carries would freeze along with it
@@ -481,5 +536,17 @@ async def index() -> HTMLResponse:
     })
 
 
-app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True),
+class _StampedIndex(StaticFiles):
+    """Any path that resolves to the index must go through the stamping
+    handler. Starlette normalizes "//" and "/index.html/" to the index
+    file, which would otherwise be served raw — unstamped and cacheable,
+    exactly the bug the route above exists to prevent."""
+
+    async def get_response(self, path, scope):
+        if path in (".", "", "index.html"):
+            return await index()
+        return await super().get_response(path, scope)
+
+
+app.mount("/", _StampedIndex(directory=str(FRONTEND_DIR), html=True),
           name="frontend")

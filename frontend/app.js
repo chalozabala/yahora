@@ -915,33 +915,70 @@ applyCssColors();
   $("rend").value = `${day}T14:40Z`;
 })();
 
-// La version que trae ESTA pagina viene del sello ?v= que el servidor le
-// pone al <script>. Si no coincide con la del servidor (o directamente no
-// existe, porque la pagina salio del cache de una version anterior), hay
-// que avisar: mostrar solo la version del servidor haria creer que estas
-// viendo lo ultimo cuando en realidad el navegador te sirve lo viejo.
-const PAGE_VERSION = (() => {
+// ---------------------------------------------------------------------------
+// Aviso de versión desactualizada.
+//
+// Hay dos problemas distintos, con arreglos distintos, y confundirlos deja
+// al usuario en un loop:
+//   * la PÁGINA es vieja  -> el navegador sirve una copia guardada: Ctrl+F5
+//   * el SERVIDOR es viejo -> se actualizaron los archivos con run.bat
+//     abierto: hay que cerrarlo y volver a abrirlo
+// El sello ?v= del <script> identifica el build con el que se armó ESTA
+// página; el servidor informa el build que hay en disco y el que él mismo
+// cargó al arrancar.
+// ---------------------------------------------------------------------------
+
+const PAGE_BUILD = (() => {
   const el = document.querySelector('script[src*="app.js"]');
   const m = el && /[?&]v=([^&"]+)/.exec(el.getAttribute("src") || "");
-  return m ? m[1] : null;
+  return m ? decodeURIComponent(m[1]) : null;
 })();
+
+function showVersionWarning(texto, detalle) {
+  const el = $("appversion");
+  if (el) {
+    el.textContent = texto;
+    el.className = "stale";
+    el.title = detalle;
+    return;
+  }
+  // la página cacheada es tan vieja que ni siquiera tiene el lugar donde
+  // escribir: el aviso se inyecta igual, que es cuando más falta hace
+  const banner = document.createElement("div");
+  banner.id = "stalebanner";
+  banner.textContent = texto;
+  banner.title = detalle;
+  banner.style.cssText =
+    "position:fixed;left:0;right:0;bottom:0;z-index:9999;padding:8px 12px;" +
+    "background:#ff3d57;color:#04121f;font:700 13px sans-serif;text-align:center";
+  document.body.appendChild(banner);
+}
 
 fetch("/version")
   .then((r) => r.json())
   .then((d) => {
-    const el = $("appversion");
-    if (PAGE_VERSION === d.version) {
-      el.textContent = `v${d.version}`;
-      el.title = "Version de la app";
+    if (d.server_stale) {
+      showVersionWarning(
+        "⚠ servidor viejo — cerrá la ventana negra y volvé a abrir run.bat",
+        `En disco hay ${d.build} pero este servidor corre ${d.process}`);
       return;
     }
-    el.textContent = "⚠ pagina vieja — apreta Ctrl+F5";
-    el.className = "stale";
-    el.title = PAGE_VERSION
-      ? `La pagina es v${PAGE_VERSION} y el servidor v${d.version}`
-      : `El navegador esta sirviendo una copia guardada. Servidor: v${d.version}`;
+    if (PAGE_BUILD !== d.build) {
+      showVersionWarning(
+        "⚠ página vieja — apretá Ctrl+F5",
+        PAGE_BUILD
+          ? `La página es ${PAGE_BUILD} y el servidor ${d.build}`
+          : `El navegador sirve una copia guardada. Servidor: ${d.build}`);
+      return;
+    }
+    const el = $("appversion");
+    if (el) {
+      el.textContent = `v${d.version}`;
+      el.className = "";
+      el.title = `build ${d.build}`;
+    }
   })
-  .catch(() => { $("appversion").textContent = ""; });
+  .catch(() => { /* sin /version no hay nada que informar */ });
 
 // auto-start the demo so the page shows something immediately
 connect();
