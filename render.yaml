@@ -1,0 +1,11 @@
+# Render.com blueprint: New + -> Blueprint -> pick this repo.
+services:
+  - type: web
+    name: sweeps-web-indicator
+    runtime: docker
+    plan: free
+    branch: claude/sweeps-web-indicator-ouzwur
+    healthCheckPath: /health
+    envVars:
+      - key: DATABENTO_API_KEY
+        sync: false   # set it in the Render dashboard (optional; demo works without)

@@ -90,6 +90,26 @@ cd backend && python3 -m uvicorn main:app --port 8080
 `databento` is only imported when live/replay is requested — demo mode
 runs with FastAPI alone.
 
+## Deploy en Railway (3 clics, sin CLI)
+
+1. Entrá a [railway.com](https://railway.com) → **Login with GitHub**
+   (la misma cuenta dueña de este repo).
+2. **New Project → Deploy from GitHub repo** → elegí `chalozabala/yahora`
+   y la rama `claude/sweeps-web-indicator-ouzwur`. Railway detecta el
+   `Dockerfile` y el `railway.json` solos y construye la app.
+3. Cuando termine el build: **Settings → Networking → Generate Domain**.
+   Esa URL pública es la que le compartís a cualquiera — abre y ya ve el
+   indicador corriendo en demo, con la pestaña Backtest incluida.
+
+Opcional: en **Variables** agregá `DATABENTO_API_KEY` para habilitar los
+modos Live y Replay con datos reales. Nota: el plan trial de Railway da un
+crédito único; Render ([render.com](https://render.com), plan free) es la
+alternativa gratis permanente — **New + → Blueprint** sobre este repo usa
+el `render.yaml` incluido (el servicio free se duerme tras inactividad y
+tarda ~1 min en despertar). En ambos, el disco es efímero: la caché de
+datos pagados de Databento no sobrevive redeploys — para backtests
+grandes conviene correr local o Fly con volumen.
+
 ## Deploy (Fly.io)
 
 ```bash
