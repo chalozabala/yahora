@@ -37,9 +37,13 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-import backtest as bt
-from feeds import make_feed
-from sweeps import SweepDetector, Trade
+from config import load_env
+
+load_env()          # pick up a local .env before anything reads os.environ
+
+import backtest as bt          # noqa: E402  (must follow load_env)
+from feeds import make_feed    # noqa: E402
+from sweeps import SweepDetector, Trade  # noqa: E402
 
 app = FastAPI(title="Sweeps Web Indicator")
 

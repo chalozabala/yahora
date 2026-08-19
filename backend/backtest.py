@@ -168,12 +168,19 @@ class DatabentoSource:
         self.api_key = api_key or os.getenv("DATABENTO_API_KEY", "")
         if not self.api_key:
             raise RuntimeError(
-                "Falta la clave de Databento (variable DATABENTO_API_KEY). "
-                "Usá el modo Demo para probar el backtest sin clave.")
+                "Falta la clave de Databento. Corré datos-reales.bat "
+                "(Windows) o ./datos-reales.sh (Mac/Linux) y pegá tu clave "
+                "cuando te la pida. El modo Demo funciona sin clave.")
         self._client = None
 
     def _db(self):
-        import databento as db
+        try:
+            import databento as db
+        except ImportError as exc:
+            raise RuntimeError(
+                "Falta instalar el módulo de datos reales. Corré "
+                "datos-reales.bat (Windows) o ./datos-reales.sh "
+                "(Mac/Linux) y volvé a intentar.") from exc
         return db
 
     def client(self):

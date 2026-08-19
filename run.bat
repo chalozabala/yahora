@@ -27,7 +27,7 @@ if not defined PY (
 REM --- entorno propio (solo la primera vez) ---------------------------
 if not exist ".venv" (
   echo.
-  echo   Preparando todo por primera vez, puede tardar 1 o 2 minutos...
+  echo   Preparando el entorno por primera vez...
   echo.
   %PY% -m venv .venv
   if errorlevel 1 (
@@ -37,11 +37,13 @@ if not exist ".venv" (
   )
 )
 call ".venv\Scripts\activate.bat"
-python -m pip install -q --upgrade pip
-python -m pip install -q -r backend\requirements.txt
+
+echo   Instalando lo necesario (unos 20 segundos la primera vez)...
+echo.
+python -m pip install --no-cache-dir --disable-pip-version-check -r backend\requirements.txt
 if errorlevel 1 (
   echo.
-  echo   Fallo la instalacion de dependencias. Sacale una foto a esta ventana y mandala.
+  echo   Fallo la instalacion. Sacale una foto a esta ventana y mandala.
   pause
   exit /b 1
 )
@@ -58,7 +60,7 @@ if not errorlevel 1 (
 )
 
 REM --- abrir el navegador cuando el server ya este arriba -------------
-start "" /min cmd /c "timeout /t 6 /nobreak >nul & start http://localhost:%PORT%"
+start "" /min cmd /c "timeout /t 5 /nobreak >nul & start http://localhost:%PORT%"
 
 echo.
 echo   Sweeps corriendo en:  http://localhost:%PORT%

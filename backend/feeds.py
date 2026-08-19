@@ -159,12 +159,21 @@ class DemoFeed:
 # Databento feeds
 # ---------------------------------------------------------------------------
 
+NO_KEY_MSG = (
+    "Falta la clave de Databento. Corré datos-reales.bat (Windows) o "
+    "./datos-reales.sh (Mac/Linux) y pegá tu clave cuando te la pida. "
+    "El modo Demo funciona sin clave.")
+
+NO_PACKAGE_MSG = (
+    "Falta instalar el módulo de datos reales. Corré datos-reales.bat "
+    "(Windows) o ./datos-reales.sh (Mac/Linux) y volvé a intentar. "
+    "El modo Demo funciona sin él.")
+
+
 def _get_key(explicit: Optional[str]) -> str:
     key = explicit or os.getenv("DATABENTO_API_KEY", "")
     if not key:
-        raise RuntimeError(
-            "No Databento API key. Set the DATABENTO_API_KEY environment "
-            "variable (or provide one in the UI).")
+        raise RuntimeError(NO_KEY_MSG)
     return key
 
 
@@ -173,9 +182,7 @@ def _import_databento():
         import databento as db  # noqa: WPS433 (heavy optional dependency)
         return db
     except ImportError as exc:
-        raise RuntimeError(
-            "The 'databento' Python package is not installed on the server "
-            "(pip install databento). Demo mode works without it.") from exc
+        raise RuntimeError(NO_PACKAGE_MSG) from exc
 
 
 def _record_events(rec, symbol_map: dict) -> list:

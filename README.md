@@ -89,6 +89,25 @@ marcá la casilla *"Add python.exe to PATH"* al instalar). Si falta,
 
 Para frenarlo: cerrá la ventana negra.
 
+### Activar datos reales (Databento)
+
+El arranque de arriba trae solo lo liviano (unos segundos) y el modo
+**Demo** funciona sin nada más. Para datos reales hay un paso extra que
+se corre **una sola vez**:
+
+* **Windows** → doble clic en `datos-reales.bat`
+* **Mac / Linux** → `./datos-reales.sh`
+
+Descarga el módulo de Databento (~250 MB, porque arrastra pandas, numpy y
+pyarrow — por eso va aparte), te pide la clave, la guarda en un archivo
+`.env` local (que nunca se sube a GitHub) y **la verifica contra
+Databento** avisándote en el momento si está mal, si no tenés permisos
+para datos de CME, o si el problema es tu conexión.
+
+Después abrís `run.bat` como siempre y ya podés usar *Databento · Replay*,
+la pestaña *Backtest* con datos reales, y *Databento · Live* si además
+tenés contratada la suscripción de tiempo real de CME.
+
 ## Run locally (manual)
 
 La forma corta (instala dependencias y levanta todo):

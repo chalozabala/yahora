@@ -1,0 +1,4 @@
+# Datos de mercado reales (modos Live / Replay y backtests con datos reales).
+# Pesa ~250 MB porque arrastra pandas, numpy y pyarrow, por eso va aparte:
+# el modo Demo y toda la interfaz funcionan sin esto.
+databento
