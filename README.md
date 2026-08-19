@@ -69,7 +69,27 @@ panel ⚙ Settings, así el backtest mide exactamente lo que ves en vivo.
 Los resultados quedan guardados en `backtest_results/` y los datos crudos
 en `data_cache/`. También hay CLI: `python3 backend/backtest_cli.py --help`.
 
-## Run locally
+## Correrlo en tu PC (sin saber nada técnico)
+
+1. **Bajá el ZIP**:
+   [descargar](https://github.com/chalozabala/yahora/archive/refs/heads/claude/sweeps-web-indicator-ouzwur.zip)
+   (o en GitHub: botón verde **Code → Download ZIP**, con la rama
+   `claude/sweeps-web-indicator-ouzwur` seleccionada).
+2. **Descomprimilo** (clic derecho → Extraer todo).
+3. **Doble clic** en:
+   * **Windows** → `run.bat`
+   * **Mac / Linux** → `run.sh` (o en una terminal: `./run.sh`)
+4. Se abre una ventana negra que prepara todo la primera vez (1-2 minutos)
+   y después **el navegador se abre solo** en `http://localhost:8080`.
+
+Requisito único: tener **Python 3** instalado
+([python.org/downloads](https://www.python.org/downloads/) — en Windows
+marcá la casilla *"Add python.exe to PATH"* al instalar). Si falta,
+`run.bat` te lo dice y te deja el link.
+
+Para frenarlo: cerrá la ventana negra.
+
+## Run locally (manual)
 
 La forma corta (instala dependencias y levanta todo):
 

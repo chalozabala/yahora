@@ -37,7 +37,14 @@ fi
 
 echo ""
 echo "  Sweeps corriendo en:  http://localhost:$PORT"
-echo "  (Ctrl+C para frenar)"
+echo "  El navegador se abre solo en unos segundos. (Ctrl+C para frenar)"
 echo ""
+
+# abrir el navegador una vez que el server esté arriba
+( sleep 5
+  if command -v xdg-open >/dev/null 2>&1; then xdg-open "http://localhost:$PORT"
+  elif command -v open >/dev/null 2>&1; then open "http://localhost:$PORT"
+  fi ) >/dev/null 2>&1 &
+
 cd backend
 exec python -m uvicorn main:app --host 0.0.0.0 --port "$PORT"
