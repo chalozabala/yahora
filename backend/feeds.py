@@ -251,6 +251,17 @@ def _record_events(rec, symbol_map: dict) -> list:
 DEPTH_SCHEMAS = ("mbp-10", "mbp-1")
 
 
+def es_error_de_esquema(mensaje: str) -> bool:
+    """¿El gateway rechazó por el esquema de libro (y no por la clave)?
+    Mensaje típico: "Not authorized for mbp-10 schema"."""
+    m = (mensaje or "").lower()
+    if not any(k in m for k in ("not authorized", "unauthorized",
+                                "not entitled", "no entitlement",
+                                "not permissioned", "forbidden")):
+        return False
+    return any(k in m for k in DEPTH_SCHEMAS) or "schema" in m
+
+
 def normalize_depth(depth: Optional[str]) -> str:
     depth = (depth or "auto").strip().lower()
     if depth in DEPTH_SCHEMAS or depth in ("auto", "none"):
@@ -259,7 +270,17 @@ def normalize_depth(depth: Optional[str]) -> str:
 
 
 class LiveFeed:
-    """Databento live gateway → trades (+ libro si el plan lo permite)."""
+    """Databento live gateway → trades (+ libro si el plan lo permite).
+
+    El gateway NO rechaza una suscripción no autorizada en el momento de
+    pedirla: la acepta y manda el rechazo después, como un ErrorMsg dentro
+    del stream ("Not authorized for mbp-10 schema"). Por eso el fallback
+    no puede ser un try/except alrededor de subscribe(): hay que escuchar
+    el arranque del stream y, si el rechazo es por el esquema de libro,
+    reconectar pidiendo uno más chico. Los trades nunca se resignan.
+    """
+
+    PRUEBA_S = 6.0        # cuánto se espera el veredicto del gateway
 
     def __init__(self, dataset: str, symbol: str, stype_in: str = "continuous",
                  api_key: Optional[str] = None, depth: str = "auto"):
@@ -269,7 +290,6 @@ class LiveFeed:
         self.api_key = _get_key(api_key)
         self.depth = normalize_depth(depth)
         self.depth_used: Optional[str] = None
-        self.depth_error: Optional[str] = None
         self._client = None
 
     def stop(self) -> None:
@@ -280,58 +300,99 @@ class LiveFeed:
             except Exception:
                 pass
 
-    def _connect(self):
-        """Create the client and subscribe. Runs in a worker thread: the
-        first subscribe() blocks on TCP connect + CRAM auth (up to tens of
-        seconds) and must not stall the server's event loop."""
+    def _connect(self, schema: Optional[str]):
+        """Crea el cliente y suscribe. Va en un hilo: la primera suscripción
+        bloquea en el TCP + la autenticación CRAM (decenas de segundos)."""
         db = _import_databento()
         client = db.Live(key=self.api_key, reconnect_policy="reconnect")
-        # los trades son lo unico imprescindible
         client.subscribe(dataset=self.dataset, schema="trades",
                          stype_in=self.stype_in, symbols=[self.symbol])
-
-        candidatos = (DEPTH_SCHEMAS if self.depth == "auto"
-                      else () if self.depth == "none" else (self.depth,))
-        for schema in candidatos:
-            try:
-                client.subscribe(dataset=self.dataset, schema=schema,
-                                 stype_in=self.stype_in,
-                                 symbols=[self.symbol])
-                self.depth_used = schema
-                break
-            except Exception as exc:      # plan sin ese esquema, p.ej.
-                self.depth_error = str(exc)
+        if schema:
+            client.subscribe(dataset=self.dataset, schema=schema,
+                             stype_in=self.stype_in, symbols=[self.symbol])
         return client
+
+    def _candidatos(self):
+        """Esquemas de libro a intentar, del mejor al peor. None = sin libro
+        (los sweeps se detectan igual: sólo necesitan los trades)."""
+        if self.depth == "none":
+            return [None]
+        if self.depth in DEPTH_SCHEMAS:
+            return [self.depth, None]
+        return [*DEPTH_SCHEMAS, None]
 
     async def events(self) -> AsyncIterator[dict]:
         yield {"type": "status", "state": "loading", "mode": "live",
                "symbol": self.symbol,
-               "detail": f"connecting to databento {self.dataset}…"}
-        client = await asyncio.to_thread(self._connect)
-        self._client = client
-        libro = self.depth_used or "sin libro"
-        yield {"type": "status", "state": "running", "mode": "live",
-               "symbol": self.symbol, "depth": self.depth_used,
-               "detail": f"databento live {self.dataset} · {libro}"}
-        if self.depth_used is None and self.depth != "none":
-            yield {"type": "status", "state": "aviso",
-                   "detail": "Tu plan no incluye datos de libro: se ven los "
-                             "trades y los sweeps, pero sin mapa de calor."}
-        elif self.depth_used == "mbp-1":
-            yield {"type": "status", "state": "aviso",
-                   "detail": "Libro de 1 nivel (MBP-1): el mapa de calor "
-                             "muestra solo la mejor oferta y demanda."}
+               "detail": f"conectando con databento {self.dataset}…"}
+
         symbol_map: dict = {}
-        try:
-            async for rec in client:
-                for ev in _record_events(rec, symbol_map):
-                    yield ev
-        finally:
-            self.stop()
-        # reaching here means the gateway closed the session cleanly —
-        # tell the UI instead of leaving it "running" over a frozen chart
+        for schema in self._candidatos():
+            client = await asyncio.to_thread(self._connect, schema)
+            self._client = client
+            pendientes, rechazado = await self._probar(client, symbol_map)
+            if rechazado:
+                # el plan no incluye este libro: probamos el siguiente
+                self.stop()
+                continue
+
+            self.depth_used = schema
+            libro = schema or "sin libro"
+            yield {"type": "status", "state": "running", "mode": "live",
+                   "symbol": self.symbol, "depth": schema,
+                   "detail": f"databento live {self.dataset} · {libro}"}
+            if schema is None and self.depth != "none":
+                yield {"type": "status", "state": "aviso",
+                       "detail": "Tu plan no incluye datos de libro: se ven "
+                                 "los trades y los sweeps, pero sin mapa de "
+                                 "calor."}
+            elif schema == "mbp-1":
+                yield {"type": "status", "state": "aviso",
+                       "detail": "Tu plan no incluye MBP-10, así que se usa "
+                                 "MBP-1: el mapa de calor muestra la mejor "
+                                 "oferta y demanda. Los sweeps se detectan "
+                                 "igual."}
+            for ev in pendientes:
+                yield ev
+            try:
+                async for rec in client:
+                    for ev in _record_events(rec, symbol_map):
+                        yield ev
+            finally:
+                self.stop()
+            # el gateway cerró la sesión: avisar en vez de dejar la pantalla
+            # congelada con el estado "running"
+            yield {"type": "error",
+                   "message": "Databento cerró la conexión en vivo."}
+            return
+
         yield {"type": "error",
-               "message": "live feed disconnected by the gateway"}
+               "message": "Databento rechazó todas las suscripciones de "
+                          "libro y también los trades. Revisá que tu plan "
+                          "incluya datos en vivo de este mercado."}
+
+    async def _probar(self, client, symbol_map: dict):
+        """Escucha el arranque del stream. Devuelve (eventos, rechazado):
+        'rechazado' es True sólo si el gateway rechazó el esquema de libro,
+        que es el caso recuperable pidiendo uno más chico."""
+        pendientes: list = []
+        it = client.__aiter__()
+        loop = asyncio.get_running_loop()
+        limite = loop.time() + self.PRUEBA_S
+        while True:
+            restante = limite - loop.time()
+            if restante <= 0:
+                return pendientes, False        # sin veredicto: seguimos
+            try:
+                rec = await asyncio.wait_for(it.__anext__(), timeout=restante)
+            except (asyncio.TimeoutError, StopAsyncIteration):
+                return pendientes, False
+            for ev in _record_events(rec, symbol_map):
+                if ev["type"] == "error" and es_error_de_esquema(ev["message"]):
+                    return [], True
+                pendientes.append(ev)
+                if ev["type"] in ("trade", "snapshot"):
+                    return pendientes, False    # ya llegan datos: listo
 
 
 class ReplayFeed:

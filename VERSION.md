@@ -4,6 +4,10 @@ La versión que estás corriendo se ve abajo a la derecha en la app.
 Si no coincide con la última de esta lista, corré `actualizar.bat`
 (Windows) o `./actualizar.sh` (Mac/Linux).
 
+- **2026.08.19-8** — Arreglo real del caso "Not authorized for mbp-10":
+  el gateway rechaza el esquema *dentro* del stream, no al suscribir, así
+  que ahora la app escucha ese rechazo y baja sola a MBP-1 (o a solo
+  trades) sin fallar. Y ese error ya no se reporta como "clave inválida".
 - **2026.08.19-7** — Funciona con planes sin MBP-10: el libro ahora es
   configurable (MBP-10 / MBP-1 / sin libro) y por defecto prueba de mayor
   a menor, quedándose con lo que tu plan permita en vez de fallar entero.

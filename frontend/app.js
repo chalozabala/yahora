@@ -306,8 +306,16 @@ function explicarError(mensaje) {
       "Suele ser el internet o un firewall bloqueando la conexión; también " +
       "pasa si tu cuenta no tiene habilitados los datos en vivo.";
   }
-  if (m.includes("401") || m.includes("403") || m.includes("auth") ||
-      m.includes("cram") || m.includes("invalid key")) {
+  // Ojo con el orden: "Not authorized for mbp-10 schema" contiene "auth",
+  // y con la regla de la clave primero se reportaba como clave inválida,
+  // mandando a revisar justo lo que estaba bien.
+  if (m.includes("schema") || m.includes("mbp-") || m.includes("mbo")) {
+    return "Tu plan de Databento no incluye ese nivel de datos de libro. " +
+      "Probá con el selector 'Libro' en ⋯ (MBP-1 o sin libro): los sweeps " +
+      "se detectan con los trades, así que funcionan igual.";
+  }
+  if (m.includes("cram") || m.includes("invalid key") ||
+      m.includes("invalid api") || m.includes("401") || m.includes("403")) {
     return "Databento rechazó la clave. Revisala en databento.com → " +
       "Settings → API Keys y volvé a correr datos-reales.bat.";
   }
