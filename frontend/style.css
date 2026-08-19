@@ -297,3 +297,31 @@ table.bt-table th:first-child, table.bt-table td:first-child {
   color: #04121f; background: var(--sell); opacity: 1;
   padding: 1px 8px; border-radius: 4px; font-weight: 700;
 }
+
+/* Error del feed: bien visible sobre el gráfico. Antes iba al pie en
+   letra chica y quedaba fuera de pantalla justo cuando más importaba. */
+#feederror {
+  position: absolute; z-index: 8; left: 50%; top: 46px;
+  transform: translateX(-50%); max-width: min(680px, 92%);
+  background: rgba(24, 12, 18, .97); border: 1px solid var(--sell);
+  border-left: 5px solid var(--sell); border-radius: 8px;
+  padding: 14px 18px; box-shadow: 0 8px 30px rgba(0,0,0,.6);
+}
+#feederror h4 {
+  margin: 0 0 6px; color: var(--sell); font-size: 14px;
+}
+#feederror p { margin: 6px 0; line-height: 1.5; }
+#feederror .fix {
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
+  color: var(--text);
+}
+#feederror code {
+  background: var(--panel2); padding: 1px 6px; border-radius: 3px;
+  font-size: 12px; word-break: break-all;
+}
+#feederror .cerrar {
+  float: right; margin: -6px -8px 0 8px; padding: 2px 8px;
+}
+#feederror.neutro { border-color: var(--accent); border-left-color: var(--accent); }
+#feederror.neutro h4 { color: var(--accent); }
+#feederror .crudo { color: var(--muted); font-size: 12px; }

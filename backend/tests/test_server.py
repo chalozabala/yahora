@@ -1,5 +1,6 @@
 """Pruebas del servidor: versión, anti-caché y servido del frontend."""
 
+import json
 import os
 import re
 import sys
@@ -118,3 +119,30 @@ def test_every_path_that_resolves_to_the_index_is_stamped(client):
 def test_health_still_works(client):
     body = client.get("/health").json()
     assert body["ok"] is True
+
+
+def test_diagnostico_reports_what_the_server_actually_sees(client):
+    d = client.get("/diagnostico").json()
+    assert set(d) == {"carpeta", "archivo_clave", "archivo_clave_existe",
+                      "modulo_databento", "clave_configurada",
+                      "clave_termina_en"}
+    # la ruta del .env es lo que permite notar que datos-reales.bat se
+    # corrio en otra copia de la carpeta
+    assert d["archivo_clave"].endswith(".env")
+    assert d["carpeta"] in d["archivo_clave"]
+
+
+def test_diagnostico_never_leaks_the_key(client, monkeypatch):
+    monkeypatch.setenv("DATABENTO_API_KEY", "db-SUPERSECRETA-1234")
+    d = client.get("/diagnostico").json()
+    assert d["clave_configurada"] is True
+    assert d["clave_termina_en"] == "1234"
+    assert "SUPERSECRETA" not in json.dumps(d)
+
+
+def test_verificar_clave_sin_clave(client, monkeypatch):
+    monkeypatch.delenv("DATABENTO_API_KEY", raising=False)
+    r = client.get("/verificar-clave").json()
+    assert r["ok"] is False
+    assert r["caso"] in ("sin_clave", "sin_modulo")
+    assert r["mensaje"]

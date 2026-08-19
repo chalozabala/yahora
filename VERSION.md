@@ -4,6 +4,10 @@ La versión que estás corriendo se ve abajo a la derecha en la app.
 Si no coincide con la última de esta lista, corré `actualizar.bat`
 (Windows) o `./actualizar.sh` (Mac/Linux).
 
+- **2026.08.19-6** — Los errores de datos reales ahora se ven en el medio
+  de la pantalla, traducidos y con el diagnóstico concreto (qué falta y en
+  qué carpeta), más un botón para verificar la clave contra Databento.
+  Aviso de "conectando" para que la pantalla no quede negra y muda.
 - **2026.08.19-5** — Arreglo crítico: `datos-reales.bat` no guardaba la
   clave (escribía un error en vez del archivo). Además: no se puede
   actualizar con Sweeps abierto, detección real de versión desactualizada

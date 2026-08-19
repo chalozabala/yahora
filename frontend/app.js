@@ -187,6 +187,7 @@ function sendStart() {
   S.speed = mode === "replay" ? (cfg.speed || 1) : 1;
   S.cfg = cfg;
   S.wantRun = true;
+  hideFeedError();
   resetData();
   if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify(cfg));
   else connect();
@@ -238,6 +239,7 @@ function ingest(ev) {
     case "sweep": ingestSweep(ev); break;
     case "status":
       if (ev.state === "running") {
+        hideFeedError();
         S.feedLabel = `${ev.mode} · ${ev.symbol}`;
         S.contract = null;
         setConn("on", S.feedLabel);
@@ -247,17 +249,158 @@ function ingest(ev) {
         S.contract = ev.contract;
         setConn("on", `${S.feedLabel || ""} → ${ev.contract}`);
       } else if (ev.state === "loading") {
-        setConn("on", "loading…");
+        setConn("on", "conectando…");
         $("feedinfo").textContent = ev.detail || "";
+        // sin esto la pantalla queda negra y muda hasta 10 segundos
+        showFeedStatus(
+          ev.mode === "replay" ? "Descargando datos…" : "Conectando con Databento…",
+          ev.mode === "replay"
+            ? "Puede tardar según el rango pedido."
+            : "Puede tardar unos segundos. Si falla, te aviso acá mismo.");
       } else if (ev.state === "finished" || ev.state === "stopped") {
         $("feedinfo").textContent = ev.detail || "";
       }
       break;
     case "error":
       setConn("err", "error");
-      $("feedinfo").textContent = ev.message || "unknown error";
+      $("feedinfo").textContent = ev.message || "error desconocido";
+      showFeedError(ev.message || "error desconocido");
       break;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Errores del feed, bien visibles y con el diagnóstico concreto.
+// Un error de datos reales tiene siempre la misma pregunta detrás: ¿qué me
+// falta? Mostrarlo en letra chica en el pie no alcanzaba — sobre todo con
+// varias copias de la carpeta dando vueltas, donde lo decisivo es DÓNDE
+// está buscando la clave el servidor.
+// ---------------------------------------------------------------------------
+
+function hideFeedError() {
+  $("feederror").hidden = true;
+  $("feederror").className = "";
+}
+
+function showFeedStatus(titulo, detalle) {
+  const el = $("feederror");
+  el.hidden = false;
+  el.className = "neutro";
+  el.innerHTML = `<h4>${escapeHtml(titulo)}</h4>` +
+                 `<p>${escapeHtml(detalle || "")}</p>`;
+}
+
+// Los errores de Databento llegan en inglés y con jerga. Traducimos los
+// casos frecuentes a algo accionable; el texto original queda igual debajo.
+function explicarError(mensaje) {
+  const m = String(mensaje).toLowerCase();
+  if (m.includes("timed out") || m.includes("connection") ||
+      m.includes("unreachable") || m.includes("resolve")) {
+    return "No se pudo llegar al servidor de datos en vivo de Databento. " +
+      "Suele ser el internet o un firewall bloqueando la conexión; también " +
+      "pasa si tu cuenta no tiene habilitados los datos en vivo.";
+  }
+  if (m.includes("401") || m.includes("403") || m.includes("auth") ||
+      m.includes("cram") || m.includes("invalid key")) {
+    return "Databento rechazó la clave. Revisala en databento.com → " +
+      "Settings → API Keys y volvé a correr datos-reales.bat.";
+  }
+  if (m.includes("entitl") || m.includes("permission") ||
+      m.includes("not authorized") || m.includes("subscription")) {
+    return "Tu cuenta no tiene contratados estos datos en vivo. Los datos " +
+      "en tiempo real de CME son una suscripción aparte del histórico. " +
+      "El Backtest y el Replay funcionan igual con histórico.";
+  }
+  if (m.includes("symbol") || m.includes("stype")) {
+    return "Databento no reconoció el instrumento. Elegí uno de la lista " +
+      "en vez de escribirlo a mano.";
+  }
+  return null;
+}
+
+function showFeedError(mensaje) {
+  const el = $("feederror");
+  el.hidden = false;
+  el.className = "";
+  const explicacion = explicarError(mensaje);
+  el.innerHTML =
+    `<button class="cerrar" title="cerrar">×</button>` +
+    `<h4>No se pudo conectar a los datos</h4>` +
+    (explicacion ? `<p>${escapeHtml(explicacion)}</p>` : "") +
+    `<p class="crudo">${escapeHtml(mensaje)}</p>` +
+    `<div class="fix">Revisando la instalación…</div>`;
+  el.querySelector(".cerrar").onclick = hideFeedError;
+
+  fetch("/diagnostico")
+    .then((r) => r.json())
+    .then((d) => {
+      const fix = el.querySelector(".fix");
+      if (!fix) return;
+      const partes = [];
+      if (!d.modulo_databento) {
+        partes.push("<b>Falta el módulo de datos reales.</b> Cerrá esta " +
+          "ventana, cerrá la ventana negra de Sweeps y hacé doble clic en " +
+          "<code>datos-reales.bat</code>.");
+      } else if (!d.clave_configurada) {
+        partes.push("<b>No hay clave cargada.</b> El servidor la busca en " +
+          `<code>${escapeHtml(d.archivo_clave)}</code>, y ese archivo ` +
+          (d.archivo_clave_existe ? "existe pero no tiene la clave adentro."
+                                  : "no existe.") +
+          " Corré <code>datos-reales.bat</code> <b>en esa misma carpeta</b> " +
+          "(si tenés varias copias descargadas, es fácil correrlo en otra).");
+      } else {
+        partes.push("El módulo está instalado y hay una clave cargada " +
+          `(termina en <code>${escapeHtml(d.clave_termina_en || "")}</code>), ` +
+          "así que el problema está del lado de Databento: la clave puede " +
+          "no ser válida, o tu cuenta puede no tener contratados los datos " +
+          "<b>en vivo</b> de CME (son una suscripción aparte del histórico). " +
+          "El <b>Backtest</b> y <b>Replay</b> funcionan igual con histórico.");
+      }
+      partes.push(`<span class="bt-note">Carpeta en uso: ` +
+        `<code>${escapeHtml(d.carpeta)}</code></span>`);
+      fix.innerHTML = partes.join("<br><br>");
+      if (d.modulo_databento && d.clave_configurada) {
+        // preguntarle a Databento zanja la duda: ¿clave mal, o falta la
+        // suscripción de tiempo real?
+        const btn = document.createElement("button");
+        btn.textContent = "Verificar mi clave con Databento";
+        btn.style.marginTop = "10px";
+        const salida = document.createElement("p");
+        fix.appendChild(document.createElement("br"));
+        fix.appendChild(btn);
+        fix.appendChild(salida);
+        btn.onclick = () => {
+          btn.disabled = true;
+          salida.textContent = "Consultando a Databento…";
+          fetch("/verificar-clave")
+            .then((r) => r.json())
+            .then((v) => {
+              let t = v.mensaje || "";
+              if (v.ok) {
+                t += " El histórico funciona: usá la pestaña Backtest.";
+                if (v.historico_desde) {
+                  t += ` Hay datos desde ${v.historico_desde} hasta ` +
+                       `${v.historico_hasta}.`;
+                }
+                t += " Si el modo Live igual falla, es porque la " +
+                     "suscripción de tiempo real de CME va aparte.";
+              }
+              salida.innerHTML = `<b>${escapeHtml(t)}</b>`;
+            })
+            .catch(() => { salida.textContent = "No se pudo verificar."; })
+            .finally(() => { btn.disabled = false; });
+        };
+      }
+    })
+    .catch(() => {
+      const fix = el.querySelector(".fix");
+      if (fix) fix.textContent = "";
+    });
+}
+
+function escapeHtml(t) {
+  return String(t).replace(/[&<>"]/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
 function ingestSnapshot(ev) {

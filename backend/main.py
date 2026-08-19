@@ -467,6 +467,37 @@ async def backtest_list() -> dict:
     return {"running": running, "finished": items}
 
 
+@app.get("/diagnostico")
+async def diagnostico() -> dict:
+    """Qué ve el servidor realmente. Con varias copias de la carpeta dando
+    vueltas, lo más útil es mostrar DE DÓNDE lee la clave: así se nota al
+    instante si datos-reales.bat se corrió en otra copia."""
+    from config import ENV_PATH
+
+    try:
+        import databento
+        modulo = getattr(databento, "__version__", "instalado")
+    except ImportError:
+        modulo = None
+    key = os.getenv("DATABENTO_API_KEY", "")
+    return {
+        "carpeta": str(FRONTEND_DIR.parent),
+        "archivo_clave": str(ENV_PATH),
+        "archivo_clave_existe": ENV_PATH.exists(),
+        "modulo_databento": modulo,
+        "clave_configurada": bool(key),
+        "clave_termina_en": key[-4:] if key else None,
+    }
+
+
+@app.get("/verificar-clave")
+async def verificar_clave() -> dict:
+    """Pregunta a Databento si la clave sirve. Es la forma mas rapida de
+    distinguir 'clave mal' de 'no tengo contratados los datos en vivo'."""
+    from check_key import verificar
+    return await asyncio.to_thread(verificar)
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"ok": True, "ts": time.time(),
