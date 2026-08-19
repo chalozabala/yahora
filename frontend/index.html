@@ -24,15 +24,22 @@
   </label>
 
   <span class="dbfields" hidden>
-    <label>Dataset <input id="dataset" value="GLBX.MDP3" size="9"></label>
-    <label>Symbol <input id="symbol" value="ES.v.0" size="7"></label>
-    <label>Symbology
-      <select id="stype">
-        <option value="continuous" selected>continuous</option>
-        <option value="raw_symbol">raw_symbol</option>
-        <option value="parent">parent</option>
-      </select>
+    <label>Instrumento
+      <select id="symbolpick" title="Siempre el contrato vigente: el de mayor volumen"></select>
     </label>
+    <input id="symbol" value="ES.v.0" size="10" hidden
+           title="Símbolo de Databento">
+    <button id="advtoggle" class="linkish" title="Dataset y symbology">⋯</button>
+    <span class="advfields" hidden>
+      <label>Dataset <input id="dataset" value="GLBX.MDP3" size="9"></label>
+      <label>Symbology
+        <select id="stype">
+          <option value="continuous" selected>continuous</option>
+          <option value="raw_symbol">raw_symbol</option>
+          <option value="parent">parent</option>
+        </select>
+      </label>
+    </span>
   </span>
 
   <span class="replayfields" hidden>
@@ -137,14 +144,8 @@
             <option value="demo">Demo (sintéticos, sin clave)</option>
           </select>
         </label>
-        <label>Instrumento
-          <select id="btsymbol">
-            <option value="ES.v.0" selected>S&amp;P 500 (ES)</option>
-            <option value="NQ.v.0">Nasdaq (NQ)</option>
-            <option value="custom">otro…</option>
-          </select>
-        </label>
-        <input id="btsymbolcustom" size="8" placeholder="GC.v.0" hidden>
+        <label>Instrumento <select id="btsymbol"></select></label>
+        <input id="btsymbolcustom" size="10" placeholder="ZN.v.0" hidden>
         <label>Días <input id="btdays" type="number" value="10" min="1"
                            max="31"></label>
       </div>

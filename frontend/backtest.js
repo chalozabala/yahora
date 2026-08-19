@@ -22,8 +22,11 @@ function showView(which) {
 $("tab-chart").addEventListener("click", () => showView("chart"));
 $("tab-backtest").addEventListener("click", () => showView("backtest"));
 
+fillInstruments($("btsymbol"), "ES.v.0");   // misma lista que la pestaña Chart
 $("btsymbol").addEventListener("change", () => {
-  $("btsymbolcustom").hidden = $("btsymbol").value !== "custom";
+  const custom = $("btsymbol").value === "custom";
+  $("btsymbolcustom").hidden = !custom;
+  if (custom) $("btsymbolcustom").focus();
 });
 
 // ---------------------------------------------------------------------------

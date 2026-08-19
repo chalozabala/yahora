@@ -63,6 +63,14 @@ button:disabled { opacity: .45; cursor: default; }
 
 .spacer { flex: 1; }
 
+button.linkish {
+  padding: 3px 8px; color: var(--muted); background: none;
+  border: 1px solid var(--border);
+}
+button.linkish:hover { color: var(--text); }
+.advfields { display: inline-flex; gap: 12px; align-items: center; }
+.advfields[hidden] { display: none; }
+
 #viewtabs { display: flex; gap: 2px; }
 #viewtabs .tab {
   border-radius: 0; padding: 4px 16px; border: 1px solid var(--border);

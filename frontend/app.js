@@ -37,6 +37,7 @@ const S = {
 
   maxDepthSz: 50,          // rolling normalizer for heatmap intensity
   lastPx: 0, lastSide: "N",
+  feedLabel: "", contract: null,   // "live · NQ.v.0" → "NQZ6"
   nBuy: 0, nSell: 0, vBuy: 0, vSell: 0,
   highlight: null,         // {id, until}
   clusters: [],            // recomputed every frame (for hit-testing)
@@ -46,6 +47,36 @@ const S = {
 const $ = (id) => document.getElementById(id);
 const canvas = $("chart");
 const ctx = canvas.getContext("2d");
+
+// ---------------------------------------------------------------------------
+// Instrumentos. El sufijo ".v.0" es la symbology continua de Databento para
+// "el contrato con más volumen del día anterior", es decir el que realmente
+// se está operando — el vigente. Al rolar, Databento avisa con un mensaje de
+// mapeo y la app muestra el contrato nuevo sin que haya que tocar nada.
+// ---------------------------------------------------------------------------
+
+const INSTRUMENTS = [
+  { sym: "ES.v.0", name: "S&P 500 — ES" },
+  { sym: "NQ.v.0", name: "Nasdaq 100 — NQ" },
+  { sym: "MES.v.0", name: "Micro S&P — MES" },
+  { sym: "MNQ.v.0", name: "Micro Nasdaq — MNQ" },
+  { sym: "YM.v.0", name: "Dow — YM" },
+  { sym: "RTY.v.0", name: "Russell 2000 — RTY" },
+  { sym: "CL.v.0", name: "Petróleo — CL" },
+  { sym: "GC.v.0", name: "Oro — GC" },
+  { sym: "NG.v.0", name: "Gas natural — NG" },
+  { sym: "ZN.v.0", name: "Bono 10 años — ZN" },
+  { sym: "6E.v.0", name: "Euro — 6E" },
+  { sym: "BTC.v.0", name: "Bitcoin — BTC" },
+];
+
+function fillInstruments(select, selected) {
+  select.innerHTML =
+    INSTRUMENTS.map((i) =>
+      `<option value="${i.sym}"${i.sym === selected ? " selected" : ""}>` +
+      `${i.name}</option>`).join("") +
+    `<option value="custom">otro…</option>`;
+}
 
 const AXIS_W = 68, AXIS_H = 22;
 const MAX_COLS = 6000, MAX_TRADES = 8000, MAX_SWEEPS = 600, MAX_LOG_ROWS = 200;
@@ -207,8 +238,14 @@ function ingest(ev) {
     case "sweep": ingestSweep(ev); break;
     case "status":
       if (ev.state === "running") {
-        setConn("on", `${ev.mode} · ${ev.symbol}`);
+        S.feedLabel = `${ev.mode} · ${ev.symbol}`;
+        S.contract = null;
+        setConn("on", S.feedLabel);
         $("feedinfo").textContent = ev.detail || "";
+      } else if (ev.state === "mapped") {
+        // Databento resolvió el símbolo continuo al contrato real en vigencia
+        S.contract = ev.contract;
+        setConn("on", `${S.feedLabel || ""} → ${ev.contract}`);
       } else if (ev.state === "loading") {
         setConn("on", "loading…");
         $("feedinfo").textContent = ev.detail || "";
@@ -816,6 +853,32 @@ function syncModeFields() {
 }
 $("mode").addEventListener("change", syncModeFields);
 syncModeFields();
+
+// ---- selector de instrumento ---------------------------------------------
+
+fillInstruments($("symbolpick"), $("symbol").value);
+
+function applyInstrument() {
+  const v = $("symbolpick").value;
+  if (v === "custom") {
+    $("symbol").hidden = false;          // escribir el símbolo a mano
+    $("symbol").focus();
+    document.querySelector(".advfields").hidden = false;
+    return;
+  }
+  $("symbol").hidden = true;
+  $("symbol").value = v;
+  // los presets son contratos continuos de CME: fijamos lo que necesitan
+  $("dataset").value = "GLBX.MDP3";
+  $("stype").value = "continuous";
+}
+$("symbolpick").addEventListener("change", applyInstrument);
+
+$("advtoggle").addEventListener("click", () => {
+  const adv = document.querySelector(".advfields");
+  adv.hidden = !adv.hidden;
+  if (!adv.hidden) $("symbol").hidden = false;
+});
 
 $("connect").addEventListener("click", sendStart);
 $("stopbtn").addEventListener("click", sendStop);

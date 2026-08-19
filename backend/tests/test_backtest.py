@@ -7,6 +7,25 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import backtest as bt  # noqa: E402
 
 
+def test_symbol_normalization_accepts_what_people_type():
+    from feeds import normalize_symbol as n
+    assert n("nq") == "NQ"                    # lo que escribio el usuario
+    assert n("nq.v.0") == "NQ.v.0"
+    assert n("es.V.0") == "ES.v.0"            # la regla de roll va minuscula
+    assert n("  mnq.c.0 ") == "MNQ.c.0"
+    assert n("esz5") == "ESZ5"
+    assert n("es.fut") == "ES.FUT"
+    assert n("6e.v.0") == "6E.v.0"
+
+
+def test_backtest_source_normalizes_symbol(monkeypatch):
+    monkeypatch.setenv("DATABENTO_API_KEY", "db-test")
+    src = bt.make_source({"mode": "databento", "symbol": "nq.v.0",
+                          "dataset": "glbx.mdp3"})
+    assert src.symbol == "NQ.v.0"
+    assert src.dataset == "GLBX.MDP3"
+
+
 def test_outcome_tracker_resolves_first_trade_at_or_after_deadline():
     tr = bt.OutcomeTracker([("1s", 1_000_000_000), ("2s", 2_000_000_000)])
     row = {"ts": 1_000_000_000}

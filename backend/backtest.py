@@ -40,6 +40,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, Iterator, List, Optional, Tuple
 
+from feeds import normalize_symbol
 from sweeps import SweepDetector, Trade
 
 PRICE_SCALE = 1e-9
@@ -270,8 +271,8 @@ def make_source(cfg: dict):
     if cfg.get("mode", "demo") == "demo":
         return SyntheticSource()
     return DatabentoSource(
-        dataset=(cfg.get("dataset") or "GLBX.MDP3").strip(),
-        symbol=(cfg.get("symbol") or "ES.v.0").strip(),
+        dataset=(cfg.get("dataset") or "GLBX.MDP3").strip().upper(),
+        symbol=normalize_symbol(cfg.get("symbol") or "ES.v.0"),
         stype_in=(cfg.get("stype_in") or "continuous").strip(),
         api_key=cfg.get("api_key") or None)
 

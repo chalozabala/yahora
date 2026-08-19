@@ -21,6 +21,7 @@ import asyncio
 import math
 import os
 import random
+import re
 import time
 from typing import AsyncIterator, Optional
 
@@ -34,6 +35,20 @@ def _px(raw: int) -> Optional[float]:
     if raw is None or raw == UNDEF_PRICE:
         return None
     return raw * PRICE_SCALE
+
+
+# {root}.{roll rule}.{rank} — the root is upper case, the roll rule letter
+# (c/n/v) is lower case and meaningful, so they are normalized separately
+_CONTINUOUS_RE = re.compile(r"^([A-Za-z0-9]+)\.([cnvCNV])\.(\d+)$")
+
+
+def normalize_symbol(sym: str) -> str:
+    """Accept what a person types ('nq', 'es.V.0') as a valid symbol."""
+    sym = (sym or "").strip()
+    m = _CONTINUOUS_RE.match(sym)
+    if m:
+        return f"{m.group(1).upper()}.{m.group(2).lower()}.{m.group(3)}"
+    return sym.upper()
 
 
 # ---------------------------------------------------------------------------
@@ -210,10 +225,14 @@ def _record_events(rec, symbol_map: dict) -> list:
         events.append({"type": "snapshot", "ts": rec.ts_event,
                        "bids": bids, "asks": asks})
     elif isinstance(rec, dbn.SymbolMappingMsg):
-        # continuous contracts roll by re-mapping to a new instrument_id
-        symbol_map[rec.instrument_id] = rec.stype_out_symbol
+        # continuous contracts roll by re-mapping to a new instrument_id:
+        # this is how the UI learns which real contract is in force
+        contract = rec.stype_out_symbol
+        symbol_map[rec.instrument_id] = contract
         events.append({"type": "status", "state": "mapped",
-                       "detail": f"instrument {rec.stype_out_symbol}"})
+                       "contract": contract,
+                       "requested": rec.stype_in_symbol,
+                       "detail": f"contrato vigente: {contract}"})
     elif isinstance(rec, dbn.SystemMsg):
         if not getattr(rec, "is_heartbeat", False):
             events.append({"type": "status", "state": "info",
@@ -355,8 +374,8 @@ class ReplayFeed:
 def make_feed(cfg: dict):
     """Build a feed from the client's start message."""
     mode = cfg.get("mode", "demo")
-    symbol = (cfg.get("symbol") or "ES.v.0").strip()
-    dataset = (cfg.get("dataset") or "GLBX.MDP3").strip()
+    symbol = normalize_symbol(cfg.get("symbol") or "ES.v.0")
+    dataset = (cfg.get("dataset") or "GLBX.MDP3").strip().upper()
     stype_in = (cfg.get("stype_in") or "continuous").strip()
     if mode == "demo":
         return DemoFeed(symbol="DEMO.ES")
